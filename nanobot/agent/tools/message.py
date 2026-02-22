@@ -86,6 +86,11 @@ class MessageTool(Tool):
         if not channel or not chat_id:
             return "Error: No target channel/chat specified"
 
+        # In CLI/agent mode, there's no ChannelManager to route messages to external
+        # channels (like feishu, telegram). The message would be silently dropped.
+        if self._default_channel == "cli" and channel not in ("cli", "terminal"):
+            return "Error: message tool requires gateway mode to send to external channels"
+
         if not self._send_callback:
             return "Error: Message sending not configured"
 
