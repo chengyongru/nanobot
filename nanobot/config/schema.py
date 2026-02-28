@@ -184,6 +184,21 @@ class QQConfig(Base):
     secret: str = ""  # 机器人密钥 (AppSecret) from q.qq.com
     allow_from: list[str] = Field(default_factory=list)  # Allowed user openids (empty = public access)
 
+
+class WeComConfig(Base):
+    """WeCom (企业微信) channel configuration using HTTP webhook callback."""
+
+    enabled: bool = False
+    corp_id: str = ""  # 企业 ID
+    corp_secret: str = ""  # 自建应用的 Secret
+    agent_id: str = ""  # 自建应用的 AgentId
+    callback_token: str = ""  # 回调验证 Token
+    callback_aes_key: str = ""  # 回调加密 AESKey (43字符 Base64)
+    webhook_path: str = "/wecom/callback"  # Webhook 路径
+    webhook_port: int = 18790  # Webhook HTTP server port
+    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs (empty = all users)
+
+
 class MatrixConfig(Base):
     """Matrix (Element) channel configuration."""
     enabled: bool = False
@@ -213,6 +228,7 @@ class ChannelsConfig(Base):
     email: EmailConfig = Field(default_factory=EmailConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
+    wecom: WeComConfig = Field(default_factory=WeComConfig)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
 
 
