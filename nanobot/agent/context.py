@@ -112,11 +112,22 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
+        runtime_ctx = self._build_runtime_context(channel, chat_id)
+        user_content = self._build_user_content(current_message, media)
+
+        # Merge runtime context into user message to avoid consecutive user messages.
+        # Some providers (e.g., MiniMax) reject consecutive messages with the same role.
+        if isinstance(user_content, str):
+            merged_content = f"{runtime_ctx}\n\n{user_content}"
+        else:
+            # user_content is a list of multimodal content blocks.
+            # Prepend runtime context as a text block.
+            merged_content = [{"type": "text", "text": runtime_ctx}] + user_content
+
         return [
             {"role": "system", "content": self.build_system_prompt(skill_names)},
             *history,
-            {"role": "user", "content": self._build_runtime_context(channel, chat_id)},
-            {"role": "user", "content": self._build_user_content(current_message, media)},
+            {"role": "user", "content": merged_content},
         ]
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
