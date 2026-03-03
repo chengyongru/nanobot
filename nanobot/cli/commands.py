@@ -272,7 +272,6 @@ def gateway(
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
 
-    config = load_config()
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     provider = _make_provider(config)
