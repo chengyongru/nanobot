@@ -198,9 +198,11 @@ class AgentLoop:
                 return False
             event = await self.bus.check_events(session_key)
             if event:
+                # Inject as user message (follow-up question), not system event
+                # This ensures LLM treats it as a natural conversation continuation
                 messages.append({
-                    "role": "system",
-                    "content": f"<SYS_EVENT type=\"user_interrupt\">{event}</SYS_EVENT>"
+                    "role": "user",
+                    "content": f"[User followed up]: {event}"
                 })
                 return True
             return False

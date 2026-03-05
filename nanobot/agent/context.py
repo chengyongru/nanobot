@@ -86,13 +86,18 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     @staticmethod
     def _get_event_handling_directive() -> str:
         """Get the event handling directive for system prompt."""
-        return """## Event Handling
+        return """## Follow-up Questions
 
-If you receive a <SYS_EVENT> message during tool execution:
-1. IMMEDIATELY acknowledge the event
-2. The event content ALWAYS takes priority over your current task
-3. Respond naturally to the event
-4. Decide whether to continue your previous task or switch to the new request
+If you see a user message starting with "[User followed up]:":
+1. This means the user sent an additional message while you were still processing their previous request
+2. Treat it as a natural conversation continuation
+3. Respond to ALL the user's questions/requests from this conversation, not just the follow-up
+4. If you already started answering the previous question, acknowledge that and then address the follow-up
+
+Example:
+- User asked: "What's your name?"
+- User followed up: "What time is it?"
+- You should answer: "I'm nanobot, an AI assistant. It's currently [time], and I'm here to help you with both questions!"
 """
 
     @staticmethod

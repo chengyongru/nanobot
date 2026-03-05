@@ -79,11 +79,10 @@ def test_system_prompt_includes_event_handling():
 
     prompt = builder.build_system_prompt(enable_event_handling=True)
 
-    assert "Event Handling" in prompt
-    assert "<SYS_EVENT>" in prompt
-    assert "IMMEDIATELY acknowledge" in prompt
-    assert "ALWAYS takes priority" in prompt
-    assert "type=\"user_interrupt\"" not in prompt  # Directive uses generic tag
+    assert "Follow-up Questions" in prompt
+    assert "[User followed up]:" in prompt
+    assert "natural conversation continuation" in prompt
+    assert "Respond to ALL" in prompt
 
 
 def test_system_prompt_no_event_handling_by_default():
@@ -145,9 +144,7 @@ async def test_agent_loop_checks_events_before_llm():
         session_key="test:key",
     )
 
-    # Event should have been injected as a system message with <SYS_EVENT> tag
-    assert any("<SYS_EVENT" in m.get("content", "") and "User interrupt" in m.get("content", "") for m in messages)
-
+    assert any(m.get("role") == "user" and "[User followed up]:" in m.get("content", "") and "User interrupt" in m.get("content", "") for m in messages)
 
 @pytest.mark.asyncio
 async def test_agent_loop_cancels_tools_on_event():
