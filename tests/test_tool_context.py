@@ -176,3 +176,47 @@ class TestMessageToolContext:
 
         assert sent_messages[0].channel == "discord"
         assert sent_messages[0].chat_id == "channel-456"
+
+
+class TestSpawnToolContext:
+    """Tests for SpawnTool context support."""
+
+    @pytest.mark.asyncio
+    async def test_spawn_passes_context(self):
+        """Test that SpawnTool passes context to subagent manager."""
+        from nanobot.agent.tools.spawn import SpawnTool
+        from nanobot.agent.subagent import SubagentManager
+        from unittest.mock import MagicMock, AsyncMock
+
+        manager = MagicMock(spec=SubagentManager)
+        manager.spawn = AsyncMock(return_value="subagent-123")
+
+        tool = SpawnTool(manager=manager)
+        ctx = ToolContext(channel="telegram", chat_id="chat-123")
+
+        result = await tool.execute(task="Hello", context=ctx)
+
+        manager.spawn.assert_called_once()
+        call_kwargs = manager.spawn.call_args.kwargs
+        assert call_kwargs.get("origin_channel") == "telegram"
+        assert call_kwargs.get("origin_chat_id") == "chat-123"
+
+    @pytest.mark.asyncio
+    async def test_spawn_fallback_to_global_state(self):
+        """Test backward compatibility: fall back to global state if no context."""
+        from nanobot.agent.tools.spawn import SpawnTool
+        from nanobot.agent.subagent import SubagentManager
+        from unittest.mock import MagicMock, AsyncMock
+
+        manager = MagicMock(spec=SubagentManager)
+        manager.spawn = AsyncMock(return_value="subagent-456")
+
+        tool = SpawnTool(manager=manager)
+        tool.set_context("discord", "channel-789")  # Set global state
+
+        await tool.execute(task="Hello", context=None)  # No context passed
+
+        manager.spawn.assert_called_once()
+        call_kwargs = manager.spawn.call_args.kwargs
+        assert call_kwargs.get("origin_channel") == "discord"
+        assert call_kwargs.get("origin_chat_id") == "channel-789"

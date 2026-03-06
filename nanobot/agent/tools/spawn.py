@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.context import ToolContext
 
 if TYPE_CHECKING:
     from nanobot.agent.subagent import SubagentManager
@@ -52,12 +53,23 @@ class SpawnTool(Tool):
             "required": ["task"],
         }
 
-    async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        task: str,
+        label: str | None = None,
+        context: ToolContext | None = None,
+        **kwargs: Any,
+    ) -> str:
         """Spawn a subagent to execute the given task."""
+        # Use context if provided, otherwise fall back to global state
+        channel = context.channel if context else self._origin_channel
+        chat_id = context.chat_id if context else self._origin_chat_id
+        session_key = f"{channel}:{chat_id}"
+
         return await self._manager.spawn(
             task=task,
             label=label,
-            origin_channel=self._origin_channel,
-            origin_chat_id=self._origin_chat_id,
-            session_key=self._session_key,
+            origin_channel=channel,
+            origin_chat_id=chat_id,
+            session_key=session_key,
         )
