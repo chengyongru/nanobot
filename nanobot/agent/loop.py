@@ -462,7 +462,7 @@ class AgentLoop:
 
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
-                message_tool.start_turn()
+                message_tool.start_turn(key)  # Reset per-session turn tracking
 
         initial_messages = self.context.build_messages(
             history=history,
@@ -503,8 +503,9 @@ class AgentLoop:
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
 
-        if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
-            return None
+        if (mt := self.tools.get("message")) and isinstance(mt, MessageTool):
+            if mt.sent_in_turn(key, tool_context.turn_id):
+                return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)

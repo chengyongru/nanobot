@@ -92,12 +92,20 @@ class TestMessageToolTurnTracking:
     def test_sent_in_turn_tracks_same_target(self) -> None:
         tool = MessageTool()
         tool.set_context("feishu", "chat1")
-        assert not tool._sent_in_turn
-        tool._sent_in_turn = True
-        assert tool._sent_in_turn
+        session_key = "feishu:chat1"
+        turn_id = "test-turn"
+        assert not tool.sent_in_turn(session_key, turn_id)
+        # Simulate sending a message
+        tool._sent_in_session[session_key] = {turn_id: True}
+        assert tool.sent_in_turn(session_key, turn_id)
 
     def test_start_turn_resets(self) -> None:
         tool = MessageTool()
-        tool._sent_in_turn = True
-        tool.start_turn()
-        assert not tool._sent_in_turn
+        session_key = "feishu:chat1"
+        turn_id = "test-turn"
+        # Simulate sending a message
+        tool._sent_in_session[session_key] = {turn_id: True}
+        assert tool.sent_in_turn(session_key, turn_id)
+        # Start new turn should reset
+        tool.start_turn(session_key)
+        assert not tool.sent_in_turn(session_key, turn_id)
