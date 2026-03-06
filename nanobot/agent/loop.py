@@ -158,7 +158,11 @@ class AgentLoop:
             self._mcp_connecting = False
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
-        """Update context for all tools that need routing info."""
+        """Update context for tools that need routing info.
+
+        DEPRECATED: Use ToolContext parameter instead.
+        Kept for backward compatibility with tools not yet updated.
+        """
         for name in ("message", "spawn", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
@@ -367,7 +371,6 @@ class AgentLoop:
                 session = self.sessions.get_or_create(key)
                 history = session.get_history(max_messages=self.memory_window)
 
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             messages = self.context.build_messages(
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
@@ -457,7 +460,6 @@ class AgentLoop:
 
             history = session.get_history(max_messages=self.memory_window)
 
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
