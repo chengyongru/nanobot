@@ -134,3 +134,45 @@ class TestToolRegistryContext:
         )
         assert "discord" in result
         assert "data" in result
+
+
+class TestMessageToolContext:
+    """Tests for MessageTool context support."""
+
+    @pytest.mark.asyncio
+    async def test_message_tool_uses_context(self):
+        """Test that MessageTool uses context parameter for routing."""
+        from nanobot.agent.tools.message import MessageTool
+        from nanobot.bus.events import OutboundMessage
+
+        sent_messages = []
+
+        async def mock_send(msg):
+            sent_messages.append(msg)
+
+        tool = MessageTool(send_callback=mock_send)
+        ctx = ToolContext(channel="telegram", chat_id="chat-123")
+
+        await tool.execute(content="Hello", context=ctx)
+
+        assert len(sent_messages) == 1
+        assert sent_messages[0].channel == "telegram"
+        assert sent_messages[0].chat_id == "chat-123"
+
+    @pytest.mark.asyncio
+    async def test_message_tool_fallback_to_global_state(self):
+        """Test backward compatibility: fall back to global state if no context."""
+        from nanobot.agent.tools.message import MessageTool
+
+        sent_messages = []
+
+        async def mock_send(msg):
+            sent_messages.append(msg)
+
+        tool = MessageTool(send_callback=mock_send)
+        tool.set_context("discord", "channel-456")  # Set global state
+
+        await tool.execute(content="Hello", context=None)  # No context passed
+
+        assert sent_messages[0].channel == "discord"
+        assert sent_messages[0].chat_id == "channel-456"
