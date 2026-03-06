@@ -15,6 +15,7 @@ from loguru import logger
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tools.context import ToolContext
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
@@ -180,6 +181,7 @@ class AgentLoop:
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
+        context: ToolContext,
         on_progress: Callable[..., Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
@@ -237,7 +239,11 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    result = await self.tools.execute(
+                        tool_call.name,
+                        tool_call.arguments,
+                        context=context,
+                    )
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -356,7 +362,15 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            # Construct ToolContext
+            tool_context = ToolContext(
+                channel=channel,
+                chat_id=chat_id,
+                message_id=msg.metadata.get("message_id") if msg.metadata else None,
+            )
+            final_content, _, all_msgs = await self._run_agent_loop(
+                messages, context=tool_context
+            )
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
@@ -441,8 +455,17 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
+        # Construct ToolContext
+        tool_context = ToolContext(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            message_id=msg.metadata.get("message_id") if msg.metadata else None,
+        )
+
         final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+            initial_messages,
+            context=tool_context,
+            on_progress=on_progress or _bus_progress,
         )
 
         if final_content is None:
