@@ -104,7 +104,8 @@ class TestDispatch:
         assert out.content == "hi"
 
     @pytest.mark.asyncio
-    async def test_processing_lock_serializes(self):
+    async def test_dispatch_no_global_lock_allows_parallel(self):
+        """Test that _dispatch no longer uses a global lock, allowing parallel processing."""
         from nanobot.bus.events import InboundMessage, OutboundMessage
 
         loop, bus = _make_loop()
@@ -123,7 +124,15 @@ class TestDispatch:
         t1 = asyncio.create_task(loop._dispatch(msg1))
         t2 = asyncio.create_task(loop._dispatch(msg2))
         await asyncio.gather(t1, t2)
-        assert order == ["start-a", "end-a", "start-b", "end-b"]
+
+        # With session-level locks (no global lock), both messages can start before either ends
+        # The order should show parallel execution: both starts before both ends
+        assert "start-a" in order
+        assert "start-b" in order
+        assert "end-a" in order
+        assert "end-b" in order
+        # Verify parallel execution: the second start should happen before the first end
+        assert order.index("start-b") < order.index("end-a")
 
 
 class TestSubagentCancellation:

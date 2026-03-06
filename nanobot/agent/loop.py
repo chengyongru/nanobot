@@ -110,7 +110,7 @@ class AgentLoop:
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
         self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
-        self._processing_lock = asyncio.Lock()
+        self._session_locks: dict[str, asyncio.Lock] = {}  # Per-session locks for concurrent processing
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -130,6 +130,10 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+    def _get_session_lock(self, session_key: str) -> asyncio.Lock:
+        """Get or create a lock for a session."""
+        return self._session_locks.setdefault(session_key, asyncio.Lock())
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -307,26 +311,26 @@ class AgentLoop:
         ))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """Process a message under the global lock."""
-        async with self._processing_lock:
-            try:
-                response = await self._process_message(msg)
-                if response is not None:
-                    await self.bus.publish_outbound(response)
-                elif msg.channel == "cli":
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel, chat_id=msg.chat_id,
-                        content="", metadata=msg.metadata or {},
-                    ))
-            except asyncio.CancelledError:
-                logger.info("Task cancelled for session {}", msg.session_key)
-                raise
-            except Exception:
-                logger.exception("Error processing message for session {}", msg.session_key)
+        """Process a message using session-level locks."""
+        # No global lock - session locks are used in _process_message
+        try:
+            response = await self._process_message(msg)
+            if response is not None:
+                await self.bus.publish_outbound(response)
+            elif msg.channel == "cli":
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
-                    content="Sorry, I encountered an error.",
+                    content="", metadata=msg.metadata or {},
                 ))
+        except asyncio.CancelledError:
+            logger.info("Task cancelled for session {}", msg.session_key)
+            raise
+        except Exception:
+            logger.exception("Error processing message for session {}", msg.session_key)
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id,
+                content="Sorry, I encountered an error.",
+            ))
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""
@@ -349,15 +353,21 @@ class AgentLoop:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
+        key = session_key or msg.session_key
+        session_lock = self._get_session_lock(key)
+
         # System messages: parse origin from chat_id ("channel:chat_id")
         if msg.channel == "system":
             channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
                                 else ("cli", msg.chat_id))
             logger.info("Processing system message from {}", msg.sender_id)
-            key = f"{channel}:{chat_id}"
-            session = self.sessions.get_or_create(key)
+
+            # 1. Read session (under lock)
+            async with session_lock:
+                session = self.sessions.get_or_create(key)
+                history = session.get_history(max_messages=self.memory_window)
+
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
-            history = session.get_history(max_messages=self.memory_window)
             messages = self.context.build_messages(
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
@@ -368,78 +378,90 @@ class AgentLoop:
                 chat_id=chat_id,
                 message_id=msg.metadata.get("message_id") if msg.metadata else None,
             )
+
+            # 2. Process message (NOT under lock)
             final_content, _, all_msgs = await self._run_agent_loop(
                 messages, context=tool_context
             )
-            self._save_turn(session, all_msgs, 1 + len(history))
-            self.sessions.save(session)
+
+            # 3. Write session (under lock)
+            async with session_lock:
+                # Re-fetch session in case it was modified by concurrent operations
+                session = self.sessions.get_or_create(key)
+                self._save_turn(session, all_msgs, 1 + len(history))
+                self.sessions.save(session)
+
             return OutboundMessage(channel=channel, chat_id=chat_id,
                                   content=final_content or "Background task completed.")
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        key = session_key or msg.session_key
-        session = self.sessions.get_or_create(key)
-
         # Slash commands
         cmd = msg.content.strip().lower()
         if cmd == "/new":
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
-            self._consolidating.add(session.key)
-            try:
-                async with lock:
-                    snapshot = session.messages[session.last_consolidated:]
-                    if snapshot:
-                        temp = Session(key=session.key)
-                        temp.messages = list(snapshot)
-                        if not await self._consolidate_memory(temp, archive_all=True):
-                            return OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content="Memory archival failed, session not cleared. Please try again.",
-                            )
-            except Exception:
-                logger.exception("/new archival failed for {}", session.key)
-                return OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content="Memory archival failed, session not cleared. Please try again.",
-                )
-            finally:
-                self._consolidating.discard(session.key)
+            # 1. Read session (under lock)
+            async with session_lock:
+                session = self.sessions.get_or_create(key)
+                lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
+                self._consolidating.add(session.key)
+                try:
+                    async with lock:
+                        snapshot = session.messages[session.last_consolidated:]
+                        if snapshot:
+                            temp = Session(key=session.key)
+                            temp.messages = list(snapshot)
+                            if not await self._consolidate_memory(temp, archive_all=True):
+                                return OutboundMessage(
+                                    channel=msg.channel, chat_id=msg.chat_id,
+                                    content="Memory archival failed, session not cleared. Please try again.",
+                                )
+                except Exception:
+                    logger.exception("/new archival failed for {}", session.key)
+                    return OutboundMessage(
+                        channel=msg.channel, chat_id=msg.chat_id,
+                        content="Memory archival failed, session not cleared. Please try again.",
+                    )
+                finally:
+                    self._consolidating.discard(session.key)
 
-            session.clear()
-            self.sessions.save(session)
-            self.sessions.invalidate(session.key)
+                session.clear()
+                self.sessions.save(session)
+                self.sessions.invalidate(session.key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
 
-        unconsolidated = len(session.messages) - session.last_consolidated
-        if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
-            self._consolidating.add(session.key)
-            lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
+        # 1. Read session (under lock)
+        async with session_lock:
+            session = self.sessions.get_or_create(key)
+            unconsolidated = len(session.messages) - session.last_consolidated
+            if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
+                self._consolidating.add(session.key)
+                lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
 
-            async def _consolidate_and_unlock():
-                try:
-                    async with lock:
-                        await self._consolidate_memory(session)
-                finally:
-                    self._consolidating.discard(session.key)
-                    _task = asyncio.current_task()
-                    if _task is not None:
-                        self._consolidation_tasks.discard(_task)
+                async def _consolidate_and_unlock():
+                    try:
+                        async with lock:
+                            await self._consolidate_memory(session)
+                    finally:
+                        self._consolidating.discard(session.key)
+                        _task = asyncio.current_task()
+                        if _task is not None:
+                            self._consolidation_tasks.discard(_task)
 
-            _task = asyncio.create_task(_consolidate_and_unlock())
-            self._consolidation_tasks.add(_task)
+                _task = asyncio.create_task(_consolidate_and_unlock())
+                self._consolidation_tasks.add(_task)
+
+            history = session.get_history(max_messages=self.memory_window)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        history = session.get_history(max_messages=self.memory_window)
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
@@ -462,6 +484,7 @@ class AgentLoop:
             message_id=msg.metadata.get("message_id") if msg.metadata else None,
         )
 
+        # 2. Process message (NOT under lock)
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages,
             context=tool_context,
@@ -471,8 +494,12 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
-        self._save_turn(session, all_msgs, 1 + len(history))
-        self.sessions.save(session)
+        # 3. Write session (under lock)
+        async with session_lock:
+            # Re-fetch session in case it was modified by concurrent operations
+            session = self.sessions.get_or_create(key)
+            self._save_turn(session, all_msgs, 1 + len(history))
+            self.sessions.save(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
