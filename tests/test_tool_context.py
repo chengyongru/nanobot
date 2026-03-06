@@ -220,3 +220,86 @@ class TestSpawnToolContext:
         call_kwargs = manager.spawn.call_args.kwargs
         assert call_kwargs.get("origin_channel") == "discord"
         assert call_kwargs.get("origin_chat_id") == "channel-789"
+
+
+class TestCronToolContext:
+    """Tests for CronTool context support."""
+
+    @pytest.mark.asyncio
+    async def test_cron_uses_context(self):
+        """Test that CronTool uses context parameter for routing."""
+        from nanobot.agent.tools.cron import CronTool
+        from nanobot.cron.service import CronService
+        from nanobot.cron.types import CronJob
+        from unittest.mock import MagicMock
+
+        # Create a mock job that will be returned by add_job
+        mock_job = MagicMock(spec=CronJob)
+        mock_job.id = "job-123"
+        mock_job.name = "test reminder message"
+
+        cron_service = MagicMock(spec=CronService)
+        cron_service.add_job = MagicMock(return_value=mock_job)
+        cron_service.list_jobs.return_value = []
+        cron_service.remove_job.return_value = True
+
+        tool = CronTool(cron_service)
+        ctx = ToolContext(channel="telegram", chat_id="chat-123")
+
+        result = await tool.execute(
+            action="add", message="test reminder message", every_seconds=60, context=ctx
+        )
+
+        # Verify the job was added with correct channel/chat_id from context
+        cron_service.add_job.assert_called_once()
+        call_kwargs = cron_service.add_job.call_args.kwargs
+        assert call_kwargs.get("channel") == "telegram"
+        assert call_kwargs.get("to") == "chat-123"
+        assert "job-123" in result
+
+    @pytest.mark.asyncio
+    async def test_cron_fallback_to_global_state(self):
+        """Test backward compatibility: fall back to global state if no context."""
+        from nanobot.agent.tools.cron import CronTool
+        from nanobot.cron.service import CronService
+        from nanobot.cron.types import CronJob
+        from unittest.mock import MagicMock
+
+        mock_job = MagicMock(spec=CronJob)
+        mock_job.id = "job-456"
+        mock_job.name = "fallback test"
+
+        cron_service = MagicMock(spec=CronService)
+        cron_service.add_job = MagicMock(return_value=mock_job)
+
+        tool = CronTool(cron_service)
+        tool.set_context("discord", "channel-789")  # Set global state
+
+        await tool.execute(
+            action="add", message="fallback test", every_seconds=120, context=None
+        )
+
+        # Verify global state was used
+        cron_service.add_job.assert_called_once()
+        call_kwargs = cron_service.add_job.call_args.kwargs
+        assert call_kwargs.get("channel") == "discord"
+        assert call_kwargs.get("to") == "channel-789"
+
+    @pytest.mark.asyncio
+    async def test_cron_no_context_error(self):
+        """Test that cron returns error when no context is available."""
+        from nanobot.agent.tools.cron import CronTool
+        from nanobot.cron.service import CronService
+        from unittest.mock import MagicMock
+
+        cron_service = MagicMock(spec=CronService)
+
+        tool = CronTool(cron_service)
+        # Don't set context or pass it
+
+        result = await tool.execute(
+            action="add", message="test", every_seconds=60, context=None
+        )
+
+        assert "Error" in result
+        assert "no session context" in result.lower()
