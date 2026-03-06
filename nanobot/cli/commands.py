@@ -244,7 +244,7 @@ def _make_provider(config: Config):
 @app.command()
 def gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
-    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory (default: ~/.nanobot/workspace)"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
@@ -252,7 +252,7 @@ def gateway(
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.config.loader import get_data_dir, load_config
+    from nanobot.config.loader import load_config
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
@@ -262,16 +262,12 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
 
-    # Load config from custom path if provided, otherwise use default
     config_path = Path(config) if config else None
     config = load_config(config_path)
-
-    # Override workspace if specified via command line
     if workspace:
         config.agents.defaults.workspace = workspace
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
-
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     provider = _make_provider(config)
@@ -521,12 +517,17 @@ def agent(
         else:
             cli_channel, cli_chat_id = "cli", session_id
 
-        def _exit_on_sigint(signum, frame):
+        def _handle_signal(signum, frame):
+            sig_name = signal.Signals(signum).name
             _restore_terminal()
-            console.print("\nGoodbye!")
-            os._exit(0)
+            console.print(f"\nReceived {sig_name}, goodbye!")
+            sys.exit(0)
 
-        signal.signal(signal.SIGINT, _exit_on_sigint)
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGHUP, _handle_signal)
+        # Ignore SIGPIPE to prevent silent process termination when writing to closed pipes
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive():
             bus_task = asyncio.create_task(agent_loop.run())

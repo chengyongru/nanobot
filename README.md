@@ -12,11 +12,11 @@
   </p>
 </div>
 
-🐈 **nanobot** is an **ultra-lightweight** personal AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw) 
+🐈 **nanobot** is an **ultra-lightweight** personal AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw).
 
-⚡️ Delivers core agent functionality in just **~4,000** lines of code — **99% smaller** than Clawdbot's 430k+ lines.
+⚡️ Delivers core agent functionality with **99% fewer lines of code** than OpenClaw.
 
-📏 Real-time line count: **3,935 lines** (run `bash core_agent_lines.sh` to verify anytime)
+📏 Real-time line count: run `bash core_agent_lines.sh` to verify anytime.
 
 ## 📢 News
 
@@ -293,11 +293,17 @@ If you prefer to configure manually, add the following to `~/.nanobot/config.jso
     "discord": {
       "enabled": true,
       "token": "YOUR_BOT_TOKEN",
-      "allowFrom": ["YOUR_USER_ID"]
+      "allowFrom": ["YOUR_USER_ID"],
+      "groupPolicy": "mention"
     }
   }
 }
 ```
+
+> `groupPolicy` controls how the bot responds in group channels:
+> - `"mention"` (default) — Only respond when @mentioned
+> - `"open"` — Respond to all messages
+> DMs always respond when the sender is in `allowFrom`.
 
 **5. Invite the bot**
 - OAuth2 → URL Generator
