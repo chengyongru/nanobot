@@ -1,8 +1,10 @@
 """Tool registry for dynamic tool management."""
 
+import inspect
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.context import ToolContext
 
 
 class ToolRegistry:
@@ -35,8 +37,22 @@ class ToolRegistry:
         """Get all tool definitions in OpenAI format."""
         return [tool.to_schema() for tool in self._tools.values()]
 
-    async def execute(self, name: str, params: dict[str, Any]) -> str:
-        """Execute a tool by name with given parameters."""
+    async def execute(
+        self,
+        name: str,
+        params: dict[str, Any],
+        context: ToolContext | None = None,
+    ) -> str:
+        """Execute a tool by name with optional context.
+
+        Args:
+            name: Tool name
+            params: Tool parameters
+            context: Optional execution context for routing
+
+        Returns:
+            Tool execution result as string
+        """
         _HINT = "\n\n[Analyze the error above and try a different approach.]"
 
         tool = self._tools.get(name)
@@ -51,7 +67,14 @@ class ToolRegistry:
             errors = tool.validate_params(params)
             if errors:
                 return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + _HINT
-            result = await tool.execute(**params)
+
+            # Pass context if tool supports it
+            sig = inspect.signature(tool.execute)
+            if "context" in sig.parameters:
+                result = await tool.execute(**params, context=context)
+            else:
+                result = await tool.execute(**params)
+
             if isinstance(result, str) and result.startswith("Error"):
                 return result + _HINT
             return result

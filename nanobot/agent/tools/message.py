@@ -3,6 +3,7 @@
 from typing import Any, Awaitable, Callable
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.context import ToolContext
 from nanobot.bus.events import OutboundMessage
 
 
@@ -20,7 +21,9 @@ class MessageTool(Tool):
         self._default_channel = default_channel
         self._default_chat_id = default_chat_id
         self._default_message_id = default_message_id
-        self._sent_in_turn: bool = False
+        # Track sent state per session (session_key -> turn_id -> bool)
+        # This is needed because MessageTool is a shared instance across concurrent sessions
+        self._sent_in_session: dict[str, dict[str, bool]] = {}
 
     def set_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Set the current message context."""
@@ -32,9 +35,14 @@ class MessageTool(Tool):
         """Set the callback for sending messages."""
         self._send_callback = callback
 
-    def start_turn(self) -> None:
-        """Reset per-turn send tracking."""
-        self._sent_in_turn = False
+    def start_turn(self, session_key: str) -> None:
+        """Reset per-turn send tracking for a specific session."""
+        if session_key in self._sent_in_session:
+            self._sent_in_session[session_key] = {}
+
+    def sent_in_turn(self, session_key: str, turn_id: str) -> bool:
+        """Check if a message was already sent in this turn for this session."""
+        return self._sent_in_session.get(session_key, {}).get(turn_id, False)
 
     @property
     def name(self) -> str:
@@ -77,33 +85,55 @@ class MessageTool(Tool):
         chat_id: str | None = None,
         message_id: str | None = None,
         media: list[str] | None = None,
+        context: ToolContext | None = None,
         **kwargs: Any
     ) -> str:
-        channel = channel or self._default_channel
-        chat_id = chat_id or self._default_chat_id
-        message_id = message_id or self._default_message_id
+        # Use context parameter if provided, otherwise fall back to global state
+        if context is not None:
+            target_channel = channel or context.channel
+            target_chat_id = chat_id or context.chat_id
+            target_message_id = message_id or context.message_id
+            # Build session key from context for state tracking
+            session_key = f"{context.channel}:{context.chat_id}"
+            turn_id = context.turn_id
+        else:
+            target_channel = channel or self._default_channel
+            target_chat_id = chat_id or self._default_chat_id
+            target_message_id = message_id or self._default_message_id
+            # Fall back to default session key
+            session_key = f"{self._default_channel}:{self._default_chat_id}"
+            turn_id = "default"
 
-        if not channel or not chat_id:
+        if not target_channel or not target_chat_id:
             return "Error: No target channel/chat specified"
 
         if not self._send_callback:
             return "Error: Message sending not configured"
 
         msg = OutboundMessage(
-            channel=channel,
-            chat_id=chat_id,
+            channel=target_channel,
+            chat_id=target_chat_id,
             content=content,
             media=media or [],
             metadata={
-                "message_id": message_id,
+                "message_id": target_message_id,
             }
         )
 
         try:
             await self._send_callback(msg)
-            if channel == self._default_channel and chat_id == self._default_chat_id:
-                self._sent_in_turn = True
+            # Track if we sent to the default/current context (per session, per turn)
+            if context is not None:
+                if target_channel == context.channel and target_chat_id == context.chat_id:
+                    if session_key not in self._sent_in_session:
+                        self._sent_in_session[session_key] = {}
+                    self._sent_in_session[session_key][turn_id] = True
+            else:
+                if target_channel == self._default_channel and target_chat_id == self._default_chat_id:
+                    if session_key not in self._sent_in_session:
+                        self._sent_in_session[session_key] = {}
+                    self._sent_in_session[session_key][turn_id] = True
             media_info = f" with {len(media)} attachments" if media else ""
-            return f"Message sent to {channel}:{chat_id}{media_info}"
+            return f"Message sent to {target_channel}:{target_chat_id}{media_info}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
