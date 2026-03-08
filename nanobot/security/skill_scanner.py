@@ -1,16 +1,28 @@
 """VirusTotal-based security scanning for skills."""
 
 import hashlib
+import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import httpx
 from loguru import logger
 
+from nanobot.config.schema import ScannedHashEntry
+
 # VirusTotal API endpoint for file reports
 VT_API_URL = "https://www.virustotal.com/api/v3/files/{hash}"
+
+# Named constants
+SHA256_DISPLAY_LENGTH = 16  # Truncate hash for display
+SESSION_CACHE_MAX_SIZE = 256  # Maximum entries in session cache
+
+# Valid SHA256 hash pattern
+SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 
 
 @dataclass
@@ -18,7 +30,7 @@ class ScanResult:
     """Result of a skill security scan."""
 
     safe: bool  # True if the skill is safe to load
-    result: str  # "clean", "malicious", "unknown", "whitelisted", "cached"
+    result: Literal["clean", "malicious", "unknown", "whitelisted", "cached", "disabled", "error"]
     message: str  # Human-readable message
 
 
@@ -32,6 +44,8 @@ class SkillScanner:
     3. Check persistent cache - if found and valid, use cached result
     4. Query VirusTotal API
     5. Cache result and make decision
+
+    Thread-safe: Uses locks to protect session cache and persistent cache access.
     """
 
     def __init__(
@@ -56,11 +70,26 @@ class SkillScanner:
         self.vt_token = vt_token
         self.enabled = skill_security_config.get("enabled", True)
         self.unknown_ttl_seconds = skill_security_config.get("unknown_ttl_seconds", 86400)
-        self.whitelist = set(skill_security_config.get("whitelist", []))
         self.scanned_hashes = skill_security_config.get("scanned_hashes", {})
         self.save_callback = save_callback
-        # In-memory session cache to prevent redundant scans within same request
-        self._session_cache: dict[str, ScanResult] = {}
+
+        # Validate and filter whitelist entries
+        raw_whitelist = skill_security_config.get("whitelist", [])
+        self.whitelist = self._validate_whitelist(raw_whitelist)
+
+        # Thread-safe LRU session cache
+        self._session_cache: OrderedDict[str, ScanResult] = OrderedDict()
+        self._cache_lock = threading.Lock()
+
+    def _validate_whitelist(self, raw_whitelist: list[str]) -> set[str]:
+        """Validate whitelist entries as valid SHA256 hashes."""
+        valid = set()
+        for entry in raw_whitelist:
+            if SHA256_PATTERN.match(entry):
+                valid.add(entry.lower())
+            else:
+                logger.warning(f"Invalid SHA256 hash in whitelist, ignoring: {entry[:16]}...")
+        return valid
 
     def check_skill(self, skill_path: Path) -> ScanResult:
         """
@@ -86,15 +115,18 @@ class SkillScanner:
             logger.warning(f"Failed to compute hash for skill '{skill_name}': {e}")
             return ScanResult(safe=True, result="error", message=f"Hash computation failed: {e}")
 
-        # Check in-memory session cache first (prevents redundant scans within same request)
-        if sha256 in self._session_cache:
-            return self._session_cache[sha256]
+        # Check in-memory session cache first (thread-safe with LRU eviction)
+        with self._cache_lock:
+            if sha256 in self._session_cache:
+                # Move to end (most recently used)
+                self._session_cache.move_to_end(sha256)
+                return self._session_cache[sha256]
 
         # Check whitelist
         if self._is_whitelisted(sha256):
             logger.debug(f"Skill '{skill_name}' in whitelist, skipping scan")
             result = ScanResult(safe=True, result="whitelisted", message="Skill is whitelisted")
-            self._session_cache[sha256] = result
+            self._add_to_session_cache(sha256, result)
             return result
 
         # Check persistent cache
@@ -104,16 +136,16 @@ class SkillScanner:
             if cache_result == "malicious":
                 logger.warning(f"Skill '{skill_name}' blocked: cached as malicious")
                 result = ScanResult(safe=False, result="malicious", message="Cached as malicious")
-                self._session_cache[sha256] = result
+                self._add_to_session_cache(sha256, result)
                 return result
             elif cache_result == "clean":
                 result = ScanResult(safe=True, result="clean", message="Cached as clean")
-                self._session_cache[sha256] = result
+                self._add_to_session_cache(sha256, result)
                 return result
             # For "unknown", continue to re-scan (TTL already handled in _get_cached_result)
 
         # Query VirusTotal
-        logger.debug(f"Skill '{skill_name}' has hash {sha256[:16]}..., querying VT...")
+        logger.debug(f"Skill '{skill_name}' has hash {sha256[:SHA256_DISPLAY_LENGTH]}..., querying VT...")
         vt_result = self._query_virustotal(sha256)
 
         if vt_result is None:
@@ -125,7 +157,7 @@ class SkillScanner:
                 result="unknown",
                 message="VirusTotal API unavailable, allowed with caution"
             )
-            self._session_cache[sha256] = result
+            self._add_to_session_cache(sha256, result)
             return result
 
         if vt_result == "not_found":
@@ -137,7 +169,7 @@ class SkillScanner:
                 result="unknown",
                 message="Hash not found in VirusTotal database"
             )
-            self._session_cache[sha256] = result
+            self._add_to_session_cache(sha256, result)
             return result
 
         # We have a result from VT
@@ -158,8 +190,18 @@ class SkillScanner:
             logger.debug(f"Skill '{skill_name}' passed security scan")
             result = ScanResult(safe=True, result="clean", message="No malicious content detected")
 
-        self._session_cache[sha256] = result
+        self._add_to_session_cache(sha256, result)
         return result
+
+    def _add_to_session_cache(self, sha256: str, result: ScanResult) -> None:
+        """Add result to session cache with LRU eviction (thread-safe)."""
+        with self._cache_lock:
+            # Evict oldest if at capacity
+            while len(self._session_cache) >= SESSION_CACHE_MAX_SIZE:
+                self._session_cache.popitem(last=False)
+            self._session_cache[sha256] = result
+            # Move to end (most recently used)
+            self._session_cache.move_to_end(sha256)
 
     def _compute_sha256(self, content: str) -> str:
         """Compute SHA256 hash of content."""
@@ -227,22 +269,19 @@ class SkillScanner:
 
     def _get_cached_result(self, sha256: str) -> tuple[str, str] | None:
         """
-        Get cached scan result for a hash.
+        Get cached scan result for a hash (thread-safe).
 
         Returns:
             (result, scanned_at) tuple or None if not cached or expired.
         """
-        entry = self.scanned_hashes.get(sha256)
-        if not entry:
-            return None
+        with self._cache_lock:
+            entry = self.scanned_hashes.get(sha256)
+            if not entry:
+                return None
 
-        # Support both dict and Pydantic model (ScannedHashEntry)
-        if hasattr(entry, "result"):
+            # ScannedHashEntry is a Pydantic model
             result = entry.result
             scanned_at = entry.scanned_at
-        else:
-            result = entry.get("result", "")
-            scanned_at = entry.get("scanned_at", "")
 
         # For "unknown" results, check TTL
         if result == "unknown" and scanned_at:
@@ -264,7 +303,7 @@ class SkillScanner:
 
     def _save_result(self, sha256: str, result: str, skill_name: str) -> None:
         """
-        Save a scan result to cache.
+        Save a scan result to cache (thread-safe).
 
         Args:
             sha256: The file hash.
@@ -273,22 +312,16 @@ class SkillScanner:
         """
         scanned_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        # Update local cache
-        # Support both dict and Pydantic model storage
-        try:
-            from nanobot.config.schema import ScannedHashEntry
-            entry = ScannedHashEntry(
-                result=result,
-                scanned_at=scanned_at,
-                skill_name=skill_name,
-            )
-        except ImportError:
-            entry = {
-                "result": result,
-                "scanned_at": scanned_at,
-                "skill_name": skill_name,
-            }
-        self.scanned_hashes[sha256] = entry
+        # Create entry (ScannedHashEntry is a Pydantic model)
+        entry = ScannedHashEntry(
+            result=result,
+            scanned_at=scanned_at,
+            skill_name=skill_name,
+        )
+
+        # Update local cache with lock
+        with self._cache_lock:
+            self.scanned_hashes[sha256] = entry
 
         # Call save callback if provided
         if self.save_callback:
@@ -296,3 +329,35 @@ class SkillScanner:
                 self.save_callback(sha256, result, scanned_at, skill_name)
             except Exception as e:
                 logger.warning(f"Failed to save scan result: {e}")
+
+    def preload_skills(self, skill_paths: list[Path]) -> dict[str, ScanResult]:
+        """
+        Pre-scan all skills at startup to populate cache.
+
+        Args:
+            skill_paths: List of skill file paths to scan.
+
+        Returns:
+            Dict mapping skill names to their scan results.
+        """
+        if not self.enabled:
+            logger.info("Security scanning disabled, skipping preload")
+            return {}
+
+        logger.info(f"Pre-scanning {len(skill_paths)} skills for security...")
+        start_time = datetime.now()
+
+        results = {}
+        for path in skill_paths:
+            if path.exists():
+                skill_name = path.parent.name
+                results[skill_name] = self.check_skill(path)
+
+        elapsed = (datetime.now() - start_time).total_seconds()
+        safe_count = sum(1 for r in results.values() if r.safe)
+        blocked_count = len(results) - safe_count
+        logger.info(
+            f"Skill pre-scan complete: {safe_count} safe, {blocked_count} blocked ({elapsed:.1f}s)"
+        )
+
+        return results

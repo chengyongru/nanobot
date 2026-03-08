@@ -332,7 +332,7 @@ class ToolsConfig(Base):
 class ScannedHashEntry(Base):
     """Cache entry for a scanned skill hash."""
 
-    result: str  # "clean", "malicious", or "unknown"
+    result: Literal["clean", "malicious", "unknown"]  # Scan result type
     scanned_at: str  # ISO format timestamp
     skill_name: str = ""  # Skill name for easier identification
 

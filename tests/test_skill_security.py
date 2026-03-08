@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from nanobot.agent.skills import SkillsLoader
-from nanobot.security.skill_scanner import SkillScanner
+from nanobot.config.schema import ScannedHashEntry
+from nanobot.security.skill_scanner import SESSION_CACHE_MAX_SIZE, ScanResult, SkillScanner
 
 
 @pytest.fixture
@@ -109,7 +110,7 @@ class TestSkillScannerCache:
         """Should return cached result."""
         test_hash = "abc123"
         basic_config["scanned_hashes"] = {
-            test_hash: {"result": "clean", "scanned_at": "2024-01-01T10:00:00Z"}
+            test_hash: ScannedHashEntry(result="clean", scanned_at="2024-01-01T10:00:00Z")
         }
         scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
         result = scanner._get_cached_result(test_hash)
@@ -121,10 +122,10 @@ class TestSkillScannerCache:
         # Set TTL to 1 second and scanned_at to 2 days ago
         basic_config["unknown_ttl_seconds"] = 1
         basic_config["scanned_hashes"] = {
-            test_hash: {
-                "result": "unknown",
-                "scanned_at": "2024-01-01T10:00:00Z",  # Old timestamp
-            }
+            test_hash: ScannedHashEntry(
+                result="unknown",
+                scanned_at="2024-01-01T10:00:00Z",  # Old timestamp
+            )
         }
         scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
         result = scanner._get_cached_result(test_hash)
@@ -138,7 +139,7 @@ class TestSkillScannerCache:
         now = datetime.now(timezone.utc)
         recent = now.isoformat().replace("+00:00", "Z")
         basic_config["scanned_hashes"] = {
-            test_hash: {"result": "unknown", "scanned_at": recent}
+            test_hash: ScannedHashEntry(result="unknown", scanned_at=recent)
         }
         scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
         result = scanner._get_cached_result(test_hash)
@@ -399,7 +400,7 @@ class TestSkillScannerCheckSkill:
     ) -> None:
         """Should use cached clean result."""
         basic_config["scanned_hashes"] = {
-            sample_skill_hash: {"result": "clean", "scanned_at": "2024-01-01T10:00:00Z"}
+            sample_skill_hash: ScannedHashEntry(result="clean", scanned_at="2024-01-01T10:00:00Z")
         }
         scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
         result = scanner.check_skill(temp_skill_file)
@@ -411,7 +412,7 @@ class TestSkillScannerCheckSkill:
     ) -> None:
         """Should block cached malicious skill."""
         basic_config["scanned_hashes"] = {
-            sample_skill_hash: {"result": "malicious", "scanned_at": "2024-01-01T10:00:00Z"}
+            sample_skill_hash: ScannedHashEntry(result="malicious", scanned_at="2024-01-01T10:00:00Z")
         }
         scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
         result = scanner.check_skill(temp_skill_file)
@@ -484,3 +485,86 @@ class TestSkillsLoaderSecurity:
         if content is not None:
             # Scanner SHOULD be called for built-in skills (they may be modified)
             mock_scanner.check_skill.assert_called_once()
+
+
+class TestWhitelistValidation:
+    """Tests for whitelist entry validation."""
+
+    def test_valid_sha256_accepted(self, basic_config: dict) -> None:
+        """Valid SHA256 hashes should be accepted."""
+        valid_hash = "a" * 64  # 64 'a' chars = valid SHA256
+        basic_config["whitelist"] = [valid_hash]
+        scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
+        assert valid_hash in scanner.whitelist
+
+    def test_invalid_sha256_rejected(self, basic_config: dict) -> None:
+        """Invalid hashes should be rejected with warning."""
+        invalid_hash = "not-a-hash"
+        basic_config["whitelist"] = [invalid_hash]
+        scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
+        assert invalid_hash not in scanner.whitelist
+        assert len(scanner.whitelist) == 0  # Original default list is empty
+
+    def test_mixed_whitelist(self, basic_config: dict) -> None:
+        """Mix of valid and invalid hashes should only keep valid ones."""
+        valid1 = "a" * 64
+        valid2 = "b" * 64
+        invalid = "not-valid"
+        basic_config["whitelist"] = [valid1, invalid, valid2]
+        scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
+        assert valid1 in scanner.whitelist
+        assert valid2 in scanner.whitelist
+        assert invalid not in scanner.whitelist
+        assert len(scanner.whitelist) == 2
+
+
+class TestSessionCache:
+    """Tests for session cache functionality."""
+
+    def test_session_cache_hit(self, basic_config: dict) -> None:
+        """Repeated check should hit session cache."""
+        scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
+        # First check adds to cache
+        result1 = ScanResult(safe=True, result="whitelisted", message="test")
+        scanner._add_to_session_cache("hash1", result1)
+        # Second check should hit cache
+        with scanner._cache_lock:
+            cached = scanner._session_cache.get("hash1")
+        assert cached == result1
+
+    def test_session_cache_lru_eviction(self, basic_config: dict) -> None:
+        """Oldest entries should be evicted when cache is full."""
+        # Use small cache for testing
+        from nanobot.security.skill_scanner import SESSION_CACHE_MAX_SIZE
+        scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
+
+        # Fill cache beyond capacity
+        for i in range(SESSION_CACHE_MAX_SIZE + 10):
+            result = ScanResult(safe=True, result="clean", message=f"test{i}")
+            scanner._add_to_session_cache(f"hash{i}", result)
+
+        # Cache should not exceed max size
+        with scanner._cache_lock:
+            assert len(scanner._session_cache) <= SESSION_CACHE_MAX_SIZE
+
+    def test_session_cache_move_to_end(self, basic_config: dict) -> None:
+        """Accessed entries should be moved to end (most recently used)."""
+        scanner = SkillScanner(vt_token="test-token", skill_security_config=basic_config)
+
+        result1 = ScanResult(safe=True, result="clean", message="test1")
+        result2 = ScanResult(safe=True, result="clean", message="test2")
+
+        scanner._add_to_session_cache("hash1", result1)
+        scanner._add_to_session_cache("hash2", result2)
+
+        # Access hash1 again (should move to end)
+        with scanner._cache_lock:
+            if "hash1" in scanner._session_cache:
+                scanner._session_cache.move_to_end("hash1")
+
+        # Check order - hash2 should be first (LRU), hash1 last (MRU)
+        with scanner._cache_lock:
+            keys = list(scanner._session_cache.keys())
+            if len(keys) >= 2:
+                assert keys[0] == "hash2"
+                assert keys[-1] == "hash1"

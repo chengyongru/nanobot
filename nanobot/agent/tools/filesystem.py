@@ -1,5 +1,6 @@
 """File system tools: read, write, edit."""
 
+import asyncio
 import difflib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -80,9 +81,9 @@ class ReadFileTool(Tool):
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
 
-            # Security check for skill files
+            # Security check for skill files (non-blocking via thread pool)
             if self._skill_scanner and self._is_skill_file(file_path):
-                result = self._skill_scanner.check_skill(file_path)
+                result = await asyncio.to_thread(self._skill_scanner.check_skill, file_path)
                 if not result.safe:
                     return f"Error: Access denied - {result.message}"
 

@@ -274,6 +274,10 @@ class AgentLoop:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
+
+        # Pre-scan all skills for security (populates cache, avoids blocking user requests)
+        await self.context.preload_skills_security()
+
         logger.info("Agent loop started")
 
         while self._running:

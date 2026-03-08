@@ -1,5 +1,6 @@
 """Context builder for assembling agent prompts."""
 
+import asyncio
 import base64
 import mimetypes
 import platform
@@ -64,6 +65,23 @@ class ContextBuilder:
             workspace / "skills",
             Path(__file__).parent.parent / "skills",  # builtin skills
         ]
+
+    async def preload_skills_security(self) -> None:
+        """Pre-scan all skills at startup to populate cache."""
+        if not self.skill_scanner:
+            return
+
+        skill_paths = [
+            skill_dir / "SKILL.md"
+            for skills_dir in self.skills_dirs
+            if skills_dir.exists()
+            for skill_dir in skills_dir.iterdir()
+            if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists()
+        ]
+
+        if skill_paths:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.skill_scanner.preload_skills, skill_paths)
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
