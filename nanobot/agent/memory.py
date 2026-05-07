@@ -590,8 +590,6 @@ class Consolidator:
     def estimate_session_prompt_tokens(
         self,
         session: Session,
-        *,
-        session_summary: str | None = None,
     ) -> tuple[int, str]:
         """Estimate prompt size from the full unconsolidated session tail."""
         history = self._full_unconsolidated_history(session, include_timestamps=True)
@@ -601,7 +599,6 @@ class Consolidator:
             current_message="[token-probe]",
             channel=channel,
             chat_id=chat_id,
-            session_summary=session_summary,
             sender_id=None,
         )
         return estimate_prompt_tokens_chain(
@@ -669,7 +666,6 @@ class Consolidator:
         self,
         session: Session,
         *,
-        session_summary: str | None = None,
         replay_max_messages: int | None = None,
     ) -> None:
         """Loop: archive old messages until prompt fits within safe budget.
@@ -691,7 +687,6 @@ class Consolidator:
             try:
                 estimated, source = self.estimate_session_prompt_tokens(
                     session,
-                    session_summary=session_summary,
                 )
             except Exception:
                 logger.exception("Token estimation failed for {}", session.key)
@@ -757,7 +752,6 @@ class Consolidator:
                 try:
                     estimated, source = self.estimate_session_prompt_tokens(
                         session,
-                        session_summary=session_summary,
                     )
                 except Exception:
                     logger.exception("Token estimation failed for {}", session.key)

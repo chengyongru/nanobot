@@ -968,7 +968,6 @@ class AgentLoop:
 
             await self.consolidator.maybe_consolidate_by_tokens(
                 session,
-                session_summary=pending,
                 replay_max_messages=self._max_messages,
             )
             # Persist subagent follow-ups into durable history BEFORE prompt
@@ -999,7 +998,6 @@ class AgentLoop:
                 current_message="" if is_subagent else msg.content,
                 channel=channel,
                 chat_id=chat_id,
-                session_summary=pending,
                 current_role=current_role,
                 sender_id=msg.sender_id,
             )
@@ -1071,7 +1069,6 @@ class AgentLoop:
 
         await self.consolidator.maybe_consolidate_by_tokens(
             session,
-            session_summary=pending,
             replay_max_messages=self._max_messages,
         )
 
@@ -1091,9 +1088,13 @@ class AgentLoop:
         history = session.get_history(**_hist_kwargs)
 
         pending_ask_id = pending_ask_user_id(history)
+        system_prompt = self.context.build_system_prompt(
+            channel=msg.channel,
+            session_summary=pending,
+        )
         if pending_ask_id:
             initial_messages = ask_user_tool_result_messages(
-                self.context.build_system_prompt(channel=msg.channel),
+                system_prompt,
                 history,
                 pending_ask_id,
                 image_generation_prompt(msg.content, msg.metadata),
@@ -1102,7 +1103,6 @@ class AgentLoop:
             initial_messages = self.context.build_messages(
                 history=history,
                 current_message=image_generation_prompt(msg.content, msg.metadata),
-                session_summary=pending,
                 media=msg.media if msg.media else None,
                 channel=msg.channel,
                 chat_id=self._runtime_chat_id(msg),

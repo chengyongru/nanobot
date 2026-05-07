@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from loguru import logger
+
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -111,13 +112,11 @@ class AutoCompact:
             logger.info("Auto-compact: reloading session {} (archiving={})", key, key in self._archiving)
             session = self.sessions.get_or_create(key)
         # Hot path: summary from in-memory dict (process hasn't restarted).
-        # Also clean metadata copy so stale _last_summary never leaks to disk.
         entry = self._summaries.pop(key, None)
         if entry:
-            session.metadata.pop("_last_summary", None)
             return session, self._format_summary(entry[0], entry[1])
-        if "_last_summary" in session.metadata:
-            meta = session.metadata.pop("_last_summary")
-            self.sessions.save(session)
+        # Cold path: summary persisted in session metadata (process restarted).
+        meta = session.metadata.get("_last_summary")
+        if isinstance(meta, dict):
             return session, self._format_summary(meta["text"], datetime.fromisoformat(meta["last_active"]))
         return session, None
