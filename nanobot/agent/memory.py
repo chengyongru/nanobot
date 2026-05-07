@@ -688,6 +688,7 @@ class Consolidator:
                     "text": last_summary,
                     "last_active": session.updated_at.isoformat(),
                 }
+                session.metadata.pop("_last_summary_used", None)
                 self.sessions.save(session)
 
 
