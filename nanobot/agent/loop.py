@@ -586,6 +586,7 @@ class AgentLoop:
         session: Session,
         history: list[dict[str, Any]],
         pending_summary: str | None,
+        session_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         return self.context.build_messages(
@@ -596,6 +597,7 @@ class AgentLoop:
             chat_id=self._runtime_chat_id(msg),
             sender_id=msg.sender_id,
             session_summary=pending_summary,
+            session_key=session_key,
         )
 
     async def _dispatch_command_inline(
@@ -1079,6 +1081,7 @@ class AgentLoop:
             current_role=current_role,
             sender_id=msg.sender_id,
             session_summary=pending,
+            session_key=key,
         )
         final_content, _, all_msgs, stop_reason, _ = await self._run_agent_loop(
             messages, session=session, channel=channel, chat_id=chat_id,
@@ -1295,7 +1298,8 @@ class AgentLoop:
         ctx.history = ctx.session.get_history(**_hist_kwargs)
 
         ctx.initial_messages = self._build_initial_messages(
-            ctx.msg, ctx.session, ctx.history, ctx.pending_summary
+            ctx.msg, ctx.session, ctx.history, ctx.pending_summary,
+            session_key=ctx.session_key,
         )
         ctx.user_persisted_early = self._persist_user_message_early(
             ctx.msg, ctx.session

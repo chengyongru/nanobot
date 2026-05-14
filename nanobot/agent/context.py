@@ -38,6 +38,7 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         channel: str | None = None,
         session_summary: str | None = None,
+        session_key: str | None = None,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
@@ -45,6 +46,13 @@ class ContextBuilder:
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
+
+        # Inject active plan into system prompt so it survives compaction
+        if session_key:
+            from nanobot.agent.tools.plan import PlanTool
+            plan = PlanTool.load_active_plan(str(self.workspace), session_key)
+            if plan:
+                parts.append(f"# Active Plan\n\n{plan}")
 
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
@@ -147,6 +155,7 @@ class ContextBuilder:
         current_role: str = "user",
         sender_id: str | None = None,
         session_summary: str | None = None,
+        session_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone, sender_id=sender_id)
@@ -159,7 +168,10 @@ class ContextBuilder:
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
         messages = [
-            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, session_summary=session_summary)},
+            {"role": "system", "content": self.build_system_prompt(
+                skill_names, channel=channel, session_summary=session_summary,
+                session_key=session_key,
+            )},
             *history,
         ]
         if messages[-1].get("role") == current_role:
