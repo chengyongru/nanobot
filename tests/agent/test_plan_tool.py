@@ -1,6 +1,8 @@
 """Tests for the plan tool."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from nanobot.agent.tools.context import RequestContext
@@ -42,6 +44,17 @@ class TestSafeFilename:
         result = _safe_filename("")
         assert result.startswith("default_")
 
+    def test_similar_keys_dont_collide(self):
+        assert _safe_filename("cli:test:1") != _safe_filename("cli:test:2")
+
+    def test_unicode_normalized(self):
+        assert _safe_filename("café") != _safe_filename("cafe")
+
+    def test_collision_resistance(self):
+        keys = [f"session:{i}" for i in range(100)]
+        filenames = [_safe_filename(k) for k in keys]
+        assert len(set(filenames)) == len(keys)
+
 
 class TestCreate:
     async def test_create_plan(self, tool, ctx):
@@ -58,8 +71,10 @@ class TestCreate:
 
     async def test_create_with_steps(self, tool):
         set_session(tool)
-        steps = '[{"text": "Step 1"}, {"text": "Step 2"}]'
-        result = await tool.execute(action="create", title="Plan", steps=steps)
+        result = await tool.execute(
+            action="create", title="Plan",
+            steps=[{"text": "Step 1"}, {"text": "Step 2"}],
+        )
         assert "- [ ] Step 1" in result
         assert "- [ ] Step 2" in result
 
@@ -76,6 +91,17 @@ class TestCreate:
         assert "Minimal Plan" in result
         assert "Goal" not in result
         assert "## Steps" not in result
+
+    async def test_create_stores_json(self, tool, workspace):
+        from pathlib import Path
+        set_session(tool)
+        await tool.execute(action="create", title="JSON Test", goal="Verify storage")
+        plans_dir = Path(workspace) / "memory" / "plans"
+        json_files = list(plans_dir.glob("*.json"))
+        assert len(json_files) == 1
+        data = json.loads(json_files[0].read_text())
+        assert data["title"] == "JSON Test"
+        assert data["goal"] == "Verify storage"
 
 
 class TestUpdate:
@@ -94,19 +120,27 @@ class TestUpdate:
 
     async def test_update_marks_steps(self, tool):
         set_session(tool)
-        steps = '[{"text": "Read file"}, {"text": "Fix bug"}]'
-        await tool.execute(action="create", title="Plan A", steps=steps)
-        updated = '[{"status": "done"}, {"status": "active"}]'
-        result = await tool.execute(action="update", steps=updated)
+        await tool.execute(
+            action="create", title="Plan A",
+            steps=[{"text": "Read file"}, {"text": "Fix bug"}],
+        )
+        result = await tool.execute(
+            action="update",
+            steps=[{"text": "Read file", "status": "done"}, {"status": "active"}],
+        )
         assert "- [x] Read file" in result
         assert "- [>] Fix bug" in result
 
     async def test_update_appends_new_steps(self, tool):
         set_session(tool)
-        steps = '[{"text": "Step 1"}]'
-        await tool.execute(action="create", title="Plan A", steps=steps)
-        new_steps = '[{"text": "Step 1"}, {"text": "Step 2"}, {"text": "Step 3"}]'
-        result = await tool.execute(action="update", steps=new_steps)
+        await tool.execute(
+            action="create", title="Plan A",
+            steps=[{"text": "Step 1"}],
+        )
+        result = await tool.execute(
+            action="update",
+            steps=[{"text": "Step 1"}, {"text": "Step 2"}, {"text": "Step 3"}],
+        )
         assert "Step 3" in result
 
     async def test_update_no_plan(self, tool):
@@ -116,10 +150,15 @@ class TestUpdate:
 
     async def test_update_steps_and_notes_together(self, tool):
         set_session(tool)
-        steps = '[{"text": "Step 1"}, {"text": "Step 2"}]'
-        await tool.execute(action="create", title="Plan A", steps=steps)
-        updated = '[{"status": "done"}, {"status": "active"}]'
-        result = await tool.execute(action="update", steps=updated, notes="Halfway there")
+        await tool.execute(
+            action="create", title="Plan A",
+            steps=[{"text": "Step 1"}, {"text": "Step 2"}],
+        )
+        result = await tool.execute(
+            action="update",
+            steps=[{"status": "done"}, {"status": "active"}],
+            notes="Halfway there",
+        )
         assert "- [x] Step 1" in result
         assert "- [>] Step 2" in result
         assert "Halfway there" in result
@@ -138,25 +177,23 @@ class TestUpdate:
         await tool.execute(action="create", title="Plan A")
         result = await tool.execute(action="update", goal="New goal")
         assert "New goal" in result
-        # Goal should appear after title with proper separator
-        lines = result.split("\n")
-        title_idx = next(i for i, ln in enumerate(lines) if ln.startswith("# Plan:"))
-        goal_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Goal:"))
-        assert goal_idx > title_idx
+        assert "Goal: New goal" in result
 
     async def test_update_adds_steps_before_notes(self, tool):
         set_session(tool)
         await tool.execute(action="create", title="Plan A")
         await tool.execute(action="update", notes="A note")
-        result = await tool.execute(action="update", steps='[{"text": "Step 1"}]')
+        result = await tool.execute(action="update", steps=[{"text": "Step 1"}])
         steps_idx = result.index("## Steps")
         notes_idx = result.index("## Notes")
         assert steps_idx < notes_idx
 
     async def test_update_filters_empty_text_steps(self, tool):
         set_session(tool)
-        steps = '[{"text": "Step 1"}, {"text": ""}]'
-        result = await tool.execute(action="create", title="Plan A", steps=steps)
+        result = await tool.execute(
+            action="create", title="Plan A",
+            steps=[{"text": "Step 1"}, {"text": ""}],
+        )
         assert "- [ ] Step 1" in result
         assert result.count("- [ ]") == 1
 
@@ -175,12 +212,13 @@ class TestShow:
 
 
 class TestDone:
-    async def test_done_removes_plan(self, tool):
+    async def test_done_archives_plan(self, tool, workspace):
         set_session(tool)
         await tool.execute(action="create", title="Plan A")
         result = await tool.execute(action="done", reason="All done")
+        assert "archived" in result.lower()
         assert "completed" in result.lower()
-        # Plan should be gone
+        # Plan should be gone from active
         result2 = await tool.execute(action="show")
         assert "No active plan" in result2
 
@@ -188,6 +226,18 @@ class TestDone:
         set_session(tool)
         result = await tool.execute(action="done")
         assert "No active plan" in result
+
+    async def test_archived_plan_has_completed_timestamp(self, tool, workspace):
+        from pathlib import Path
+        set_session(tool)
+        await tool.execute(action="create", title="Timestamped")
+        await tool.execute(action="done")
+        archive_dir = Path(workspace) / "memory" / "plans" / "archive"
+        archive_files = list(archive_dir.glob("*.json"))
+        assert len(archive_files) == 1
+        data = json.loads(archive_files[0].read_text())
+        assert "completed" in data
+        assert data["completed"] is not None
 
 
 class TestSessionIsolation:
@@ -224,6 +274,7 @@ class TestSchema:
         params = schema["function"]["parameters"]
         assert "action" in params["properties"]
         assert params["properties"]["action"]["enum"] == ["create", "update", "show", "done"]
+        assert params["properties"]["steps"]["type"] == "array"
 
     def test_name_and_description(self, tool):
         assert tool.name == "plan"
@@ -258,21 +309,25 @@ class TestContextBuilderIntegration:
         workspace = tmp_path
         plans_dir = workspace / "memory" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / f"{_safe_filename('cli:test')}.md").write_text(
-            "# Plan: Test\nGoal: Do stuff\n## Steps\n- [x] Step 1\n- [ ] Step 2",
-            encoding="utf-8",
+        plan_data = {
+            "title": "Test",
+            "goal": "Do stuff",
+            "steps": [{"text": "Step 1", "status": "done"}, {"text": "Step 2", "status": "pending"}],
+            "notes": [],
+            "created": "2025-01-01T00:00:00Z",
+            "updated": None,
+        }
+        (plans_dir / f"{_safe_filename('cli:test')}.json").write_text(
+            json.dumps(plan_data), encoding="utf-8",
         )
 
         builder = ContextBuilder(workspace=workspace)
-        # System prompt must NOT contain the plan (KV cache stability)
         prompt = builder.build_system_prompt()
         assert "Active Plan" not in prompt
 
-        # Register a mock provider to simulate PlanTool integration
         def _provider(session_key):
             if session_key == "cli:test":
-                plan_path = plans_dir / f"{_safe_filename('cli:test')}.md"
-                return f"# Active Plan\n\n{plan_path.read_text(encoding='utf-8')}"
+                return "# Active Plan\n\n" + PlanTool.render_markdown(plan_data)
             return None
 
         builder.register_runtime_context_provider(_provider)
@@ -297,28 +352,83 @@ class TestContextBuilderIntegration:
     def test_plan_in_full_messages(self, tmp_path):
         from nanobot.agent.context import ContextBuilder
 
-        plans_dir = tmp_path / "memory" / "plans"
+        workspace = tmp_path
+        plans_dir = workspace / "memory" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / f"{_safe_filename('cli:test')}.md").write_text(
-            "# Plan: Integration Test\nGoal: Verify injection",
-            encoding="utf-8",
+        plan_data = {
+            "title": "Integration Test",
+            "goal": "Verify injection",
+            "steps": [],
+            "notes": [],
+            "created": "2025-01-01T00:00:00Z",
+            "updated": None,
+        }
+        (plans_dir / f"{_safe_filename('cli:test')}.json").write_text(
+            json.dumps(plan_data), encoding="utf-8",
         )
 
-        builder = ContextBuilder(workspace=tmp_path)
+        builder = ContextBuilder(workspace=workspace)
 
         def _provider(session_key):
             if session_key == "cli:test":
-                plan_path = plans_dir / f"{_safe_filename('cli:test')}.md"
-                return f"# Active Plan\n\n{plan_path.read_text(encoding='utf-8')}"
+                return "# Active Plan\n\n" + PlanTool.render_markdown(plan_data)
             return None
 
         builder.register_runtime_context_provider(_provider)
         messages = builder.build_messages(
             history=[], current_message="hello", session_key="cli:test"
         )
-        # Plan must be in user message (runtime context), not system prompt
         system = messages[0]["content"]
         assert "Active Plan" not in system
         user_content = messages[-1]["content"]
         assert "Active Plan" in user_content
         assert "Integration Test" in user_content
+
+
+class TestSpecialCharacters:
+    async def test_title_with_markdown(self, tool):
+        set_session(tool)
+        result = await tool.execute(
+            action="create",
+            title="Plan ## Not a heading",
+            goal="Goal with ```code``` and **bold**",
+        )
+        assert "Plan created" in result
+        show = await tool.execute(action="show")
+        assert "Not a heading" in show
+        assert "**bold**" in show
+
+    async def test_step_with_special_chars(self, tool):
+        set_session(tool)
+        result = await tool.execute(
+            action="create", title="Test",
+            steps=[{"text": "Fix bug in `foo.bar` [critical]"}],
+        )
+        assert "`foo.bar`" in result
+        assert "[critical]" in result
+
+
+class TestStatusNormalization:
+    async def test_unknown_status_clamped_to_pending(self, tool):
+        set_session(tool)
+        result = await tool.execute(
+            action="create", title="Test",
+            steps=[{"text": "Step 1", "status": "unknown"}],
+        )
+        assert "- [ ] Step 1" in result
+
+    async def test_valid_statuses_preserved(self, tool):
+        set_session(tool)
+        result = await tool.execute(
+            action="create", title="Test",
+            steps=[
+                {"text": "A", "status": "pending"},
+                {"text": "B", "status": "active"},
+                {"text": "C", "status": "done"},
+                {"text": "D", "status": "blocked"},
+            ],
+        )
+        assert "- [ ] A" in result
+        assert "- [>] B" in result
+        assert "- [x] C" in result
+        assert "- [!] D" in result

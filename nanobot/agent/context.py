@@ -38,6 +38,18 @@ class ContextBuilder:
         """Register a callable(provider(session_key) -> str|None) to inject extra content into runtime context."""
         self._runtime_context_providers.append(provider)
 
+    def inject_runtime_providers(
+        self, runtime_ctx: str, session_key: str | None,
+    ) -> str:
+        """Inject registered runtime context provider content before the end marker."""
+        for provider in self._runtime_context_providers:
+            extra = provider(session_key)
+            if extra:
+                idx = runtime_ctx.rfind(self._RUNTIME_CONTEXT_END)
+                if idx != -1:
+                    runtime_ctx = runtime_ctx[:idx] + f"\n\n{extra}\n" + runtime_ctx[idx:]
+        return runtime_ctx
+
     def build_system_prompt(
         self,
         skill_names: list[str] | None = None,
@@ -156,16 +168,7 @@ class ContextBuilder:
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone, sender_id=sender_id)
-
-        # Allow registered tools to inject extra content into runtime context.
-        # This keeps the system prompt stable for KV cache while making
-        # per-session state (e.g. active plan) visible every turn.
-        for provider in self._runtime_context_providers:
-            extra = provider(session_key)
-            if extra:
-                idx = runtime_ctx.rfind(self._RUNTIME_CONTEXT_END)
-                if idx != -1:
-                    runtime_ctx = runtime_ctx[:idx] + f"\n\n{extra}\n" + runtime_ctx[idx:]
+        runtime_ctx = self.inject_runtime_providers(runtime_ctx, session_key)
 
         user_content = self._build_user_content(current_message, media)
 

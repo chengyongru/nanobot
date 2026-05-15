@@ -724,6 +724,10 @@ class AgentLoop:
                     pending_msg.channel,
                     self._runtime_chat_id(pending_msg),
                     self.context.timezone,
+                    sender_id=pending_msg.sender_id,
+                )
+                runtime_ctx = self.context.inject_runtime_providers(
+                    runtime_ctx, session_key,
                 )
                 if isinstance(user_content, str):
                     merged: str | list[dict[str, Any]] = f"{runtime_ctx}\n\n{user_content}"

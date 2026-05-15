@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
+from collections import OrderedDict
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +13,8 @@ from typing import Any, Callable
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.schema import (
+    ArraySchema,
+    ObjectSchema,
     StringSchema,
     tool_parameters_schema,
 )
@@ -28,11 +30,22 @@ _PLAN_PARAMETERS = tool_parameters_schema(
     goal=StringSchema(
         "Goal description (recommended for create). What you want to achieve.",
     ),
-    steps=StringSchema(
-        "JSON array of step objects. Each step has 'text' (string) and "
-        "optionally 'status' ('pending'|'active'|'done'|'blocked'). "
-        "Example: [{\"text\": \"Read config\", \"status\": \"done\"}, "
-        "{\"text\": \"Implement feature\", \"status\": \"active\"}]",
+    steps=ArraySchema(
+        ObjectSchema(
+            properties={
+                "text": StringSchema("Step description"),
+                "status": StringSchema(
+                    "Step status",
+                    enum=["pending", "active", "done", "blocked"],
+                ),
+            },
+            required=["text"],
+        ),
+        description=(
+            "Step objects to add or update. Each step has 'text' (string, required) "
+            "and optionally 'status' (pending|active|done|blocked). "
+            "For updates, steps are matched by index."
+        ),
     ),
     notes=StringSchema(
         "Notes to append — discoveries, decisions, or observations.",
@@ -52,7 +65,9 @@ _plan_session_key: ContextVar[str] = ContextVar("plan_session_key", default="")
 
 _PLAN_CACHE_TTL = 5.0
 _PLAN_CACHE_MAX = 256
-_plan_cache: dict[str, tuple[float, str]] = {}
+_plan_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
+
+_VALID_STATUSES = frozenset({"pending", "active", "done", "blocked"})
 
 
 def _safe_filename(key: str) -> str:
@@ -115,19 +130,27 @@ class PlanTool(Tool, ContextAware):
             return None
         return _provider
 
+    # --- Storage ---
+
     def _plan_path(self, session_key: str | None = None) -> Path:
         key = session_key or _plan_session_key.get()
-        return self._plans_dir / f"{_safe_filename(key)}.md"
+        return self._plans_dir / f"{_safe_filename(key)}.json"
 
-    def _read_plan(self, path: Path) -> str | None:
+    def _read_plan(self, path: Path) -> dict | None:
         if not path.exists():
             return None
-        return path.read_text(encoding="utf-8")
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
 
-    def _write_plan(self, path: Path, content: str) -> None:
+    def _write_plan(self, path: Path, plan: dict) -> None:
         self._plans_dir.mkdir(parents=True, exist_ok=True)
+        plan["updated"] = _now_iso()
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(content, encoding="utf-8")
+        tmp.write_text(
+            json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         tmp.replace(path)
         _plan_cache.pop(path.name, None)
 
@@ -136,26 +159,7 @@ class PlanTool(Tool, ContextAware):
             path.unlink()
         _plan_cache.pop(path.name, None)
 
-    # --- Parsing ---
-
-    @staticmethod
-    def _parse_steps(plan_text: str) -> list[dict[str, str]]:
-        steps = []
-        for m in re.finditer(
-            r"^- \[([ x>!])\] (.+)$", plan_text, re.MULTILINE
-        ):
-            marker = m.group(1)
-            text = m.group(2).strip()
-            if marker == "x":
-                status = "done"
-            elif marker == ">":
-                status = "active"
-            elif marker == "!":
-                status = "blocked"
-            else:
-                status = "pending"
-            steps.append({"text": text, "status": status})
-        return steps
+    # --- Rendering ---
 
     @staticmethod
     def _render_steps(steps: list[dict[str, str]]) -> str:
@@ -167,80 +171,86 @@ class PlanTool(Tool, ContextAware):
         return "\n".join(lines)
 
     @staticmethod
-    def _parse_title(plan_text: str) -> str:
-        m = re.search(r"^# Plan: (.+)$", plan_text, re.MULTILINE)
-        return m.group(1).strip() if m else ""
+    def render_markdown(plan: dict) -> str:
+        """Render a plan dict as markdown for display or context injection."""
+        lines = [f"# Plan: {plan['title']}"]
+        if plan.get("goal"):
+            lines.append(f"\nGoal: {plan['goal']}")
+        steps = plan.get("steps", [])
+        if steps:
+            lines.append("\n## Steps")
+            lines.append(PlanTool._render_steps(steps))
+        notes = plan.get("notes", [])
+        if notes:
+            lines.append("\n## Notes")
+            for n in notes:
+                lines.append(f"- [{n['ts']}] {n['text']}")
+        lines.append(f"\nCreated: {plan['created']}")
+        if plan.get("updated"):
+            lines.append(f"Updated: {plan['updated']}")
+        return "\n".join(lines)
+
+    # --- Validation ---
 
     @staticmethod
-    def _parse_goal(plan_text: str) -> str:
-        m = re.search(r"^Goal: (.+)$", plan_text, re.MULTILINE)
-        return m.group(1).strip() if m else ""
+    def _validate_steps(steps: list[dict]) -> list[dict]:
+        """Normalize step dicts: clamp unknown status. Preserves empty text for status-only updates."""
+        result = []
+        for s in steps:
+            text = str(s.get("text", "")).strip()
+            status = s.get("status", "pending")
+            if status not in _VALID_STATUSES:
+                status = "pending"
+            result.append({"text": text, "status": status})
+        return result
 
     # --- Action handlers ---
 
-    def _action_create(self, title: str | None, goal: str | None, steps_raw: str | None) -> str:
+    def _action_create(
+        self, title: str | None, goal: str | None, steps: list[dict] | None,
+    ) -> str:
         if not title or not title.strip():
             return "Error: title is required for action='create'"
 
         path = self._plan_path()
         existing = self._read_plan(path)
         if existing:
+            md = self.render_markdown(existing)
             return (
                 "A plan already exists for this session. "
                 "Use action='update' to modify it, or action='done' to complete it first.\n\n"
-                + existing
+                + md
             )
 
-        steps = [s for s in self._parse_steps_input(steps_raw) if s["text"]]
-        lines = [f"# Plan: {title.strip()}"]
-        if goal:
-            lines.append(f"\nGoal: {goal.strip()}")
-        if steps:
-            lines.append("\n## Steps")
-            lines.append(self._render_steps(steps))
-        lines.append(f"\nCreated: {_now_iso()}")
-
-        content = "\n".join(lines)
-        self._write_plan(path, content)
-        return f"Plan created.\n\n{content}"
+        now = _now_iso()
+        plan = {
+            "title": title.strip(),
+            "goal": goal.strip() if goal else None,
+            "steps": [s for s in self._validate_steps(steps or []) if s["text"]],
+            "notes": [],
+            "created": now,
+            "updated": None,
+        }
+        self._write_plan(path, plan)
+        return f"Plan created.\n\n{self.render_markdown(plan)}"
 
     def _action_update(
         self,
-        steps_raw: str | None,
+        steps: list[dict] | None,
         notes: str | None,
         goal: str | None,
     ) -> str:
         path = self._plan_path()
         plan = self._read_plan(path)
         if not plan:
-            return (
-                "No active plan. Use action='create' to start one."
-            )
+            return "No active plan. Use action='create' to start one."
 
-        lines = plan.split("\n")
-
-        # Update goal
         if goal and goal.strip():
-            new_goal_line = f"Goal: {goal.strip()}"
-            goal_idx = next(
-                (i for i, ln in enumerate(lines) if ln.startswith("Goal: ")), None
-            )
-            if goal_idx is not None:
-                lines[goal_idx] = new_goal_line
-            else:
-                # Insert after title with blank line separator
-                title_idx = next(
-                    (i for i, ln in enumerate(lines) if ln.startswith("# Plan: ")), 0
-                )
-                lines.insert(title_idx + 1, new_goal_line)
-                lines.insert(title_idx + 1, "")
+            plan["goal"] = goal.strip()
 
-        # Update steps
-        if steps_raw:
-            new_steps = self._parse_steps_input(steps_raw)
-            existing_steps = self._parse_steps(plan)
-
-            # Merge: update existing by index, append new ones
+        if steps:
+            new_steps = self._validate_steps(steps)
+            existing_steps = plan.get("steps", [])
             for i, ns in enumerate(new_steps):
                 if i < len(existing_steps):
                     if ns.get("status") and ns["status"] != "pending":
@@ -250,46 +260,22 @@ class PlanTool(Tool, ContextAware):
                 else:
                     if ns["text"]:
                         existing_steps.append(ns)
+            plan["steps"] = existing_steps
 
-            rendered = self._render_steps(existing_steps)
-            # Replace the steps section
-            steps_start = next(
-                (i for i, ln in enumerate(lines) if ln.strip() == "## Steps"), None
-            )
-            if steps_start is not None:
-                # Find where steps end (next ## or end)
-                steps_end = steps_start + 1
-                while steps_end < len(lines) and lines[steps_end].startswith("- ["):
-                    steps_end += 1
-                lines[steps_start:steps_end] = ["## Steps", rendered]
-            else:
-                # Insert Steps before Notes if Notes exists, else append
-                notes_idx = next(
-                    (i for i, ln in enumerate(lines) if ln.strip() == "## Notes"), None
-                )
-                if notes_idx is not None:
-                    for j, insert_line in enumerate(["## Steps", rendered, ""]):
-                        lines.insert(notes_idx + j, insert_line)
-                else:
-                    lines.extend(["", "## Steps", rendered])
-
-        # Append notes
         if notes and notes.strip():
-            if "## Notes" not in lines:
-                lines.append("")
-                lines.append("## Notes")
-            lines.append(f"- [{_now_iso()}] {notes.strip()}")
+            plan_notes = plan.get("notes", [])
+            plan_notes.append({"ts": _now_iso(), "text": notes.strip()})
+            plan["notes"] = plan_notes
 
-        content = "\n".join(lines)
-        self._write_plan(path, content)
-        return f"Plan updated.\n\n{content}"
+        self._write_plan(path, plan)
+        return f"Plan updated.\n\n{self.render_markdown(plan)}"
 
     def _action_show(self) -> str:
         path = self._plan_path()
         plan = self._read_plan(path)
         if not plan:
             return "No active plan for this session."
-        return f"Current plan:\n\n{plan}"
+        return f"Current plan:\n\n{self.render_markdown(plan)}"
 
     def _action_done(self, reason: str | None) -> str:
         path = self._plan_path()
@@ -297,62 +283,40 @@ class PlanTool(Tool, ContextAware):
         if not plan:
             return "No active plan to complete."
 
-        # Count completed vs total steps
-        steps = self._parse_steps(plan)
+        steps = plan.get("steps", [])
         done = sum(1 for s in steps if s["status"] == "done")
         total = len(steps)
         summary = f"({done}/{total} steps completed)" if total else ""
 
-        # Mark completion, append timestamp, and remove active plan
-        archive_line = f"\nCompleted: {_now_iso()}"
-        if reason:
-            archive_line += f" — {reason.strip()}"
-        if summary:
-            archive_line += f" {summary}"
+        now = _now_iso()
+        plan["completed"] = now
 
-        content = plan + archive_line
+        # Archive
+        archive_dir = self._plans_dir / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / path.name
+        tmp = archive_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        tmp.replace(archive_path)
+
         self._delete_plan(path)
-        return f"Plan completed and removed. {summary}\n\n{content}"
 
-    @staticmethod
-    def _parse_steps_input(steps_raw: str | None) -> list[dict[str, str]]:
-        if not steps_raw:
-            return []
-
-        try:
-            items = json.loads(steps_raw)
-        except (json.JSONDecodeError, TypeError):
-            # Treat as plain text lines
-            items = []
-            for line in str(steps_raw).split("\n"):
-                cleaned = line.strip()
-                if cleaned.startswith("- "):
-                    cleaned = cleaned[2:]
-                cleaned = cleaned.strip()
-                if cleaned:
-                    items.append({"text": cleaned})
-
-        if not isinstance(items, list):
-            return []
-        result = []
-        for item in items:
-            if isinstance(item, str):
-                text = item.strip()
-                if text:
-                    result.append({"text": text, "status": "pending"})
-            elif isinstance(item, dict):
-                result.append({
-                    "text": str(item.get("text", "")).strip(),
-                    "status": item.get("status", "pending"),
-                })
-        return result
+        md = self.render_markdown(plan)
+        footer = f"\nCompleted: {now}"
+        if reason:
+            footer += f" — {reason.strip()}"
+        if summary:
+            footer += f" {summary}"
+        return f"Plan completed and archived. {summary}\n\n{md}{footer}"
 
     async def execute(
         self,
         action: str,
         title: str | None = None,
         goal: str | None = None,
-        steps: str | None = None,
+        steps: list[dict] | None = None,
         notes: str | None = None,
         reason: str | None = None,
         **kwargs: Any,
@@ -367,22 +331,38 @@ class PlanTool(Tool, ContextAware):
             return self._action_done(reason)
         return f"Unknown action: {action}. Use create, update, show, or done."
 
+    # --- Cache ---
+
+    @staticmethod
+    def _evict_cache(now: float) -> None:
+        """Evict expired entries; if still over limit, evict oldest."""
+        if len(_plan_cache) <= _PLAN_CACHE_MAX:
+            return
+        expired = [k for k, (ts, _) in _plan_cache.items()
+                   if (now - ts) >= _PLAN_CACHE_TTL]
+        for k in expired:
+            del _plan_cache[k]
+        while len(_plan_cache) > _PLAN_CACHE_MAX:
+            _plan_cache.popitem(last=False)
+
     @staticmethod
     def load_active_plan(workspace: str, session_key: str) -> str | None:
-        """Load the active plan for context injection. Returns None if no plan exists."""
+        """Load the active plan for context injection. Returns rendered markdown or None."""
         plans_dir = Path(workspace) / "memory" / "plans"
-        path = plans_dir / f"{_safe_filename(session_key)}.md"
+        path = plans_dir / f"{_safe_filename(session_key)}.json"
         cache_key = path.name
         now = time.monotonic()
         cached = _plan_cache.get(cache_key)
         if cached and (now - cached[0]) < _PLAN_CACHE_TTL:
             return cached[1]
-        # Evict expired entries when cache exceeds limit
-        if len(_plan_cache) > _PLAN_CACHE_MAX:
-            _plan_cache.clear()
+        PlanTool._evict_cache(now)
         if not path.exists():
             _plan_cache.pop(cache_key, None)
             return None
-        content = path.read_text(encoding="utf-8")
-        _plan_cache[cache_key] = (now, content)
-        return content
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        rendered = PlanTool.render_markdown(plan)
+        _plan_cache[cache_key] = (now, rendered)
+        return rendered
