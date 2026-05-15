@@ -51,6 +51,7 @@ _PLAN_PARAMETERS = tool_parameters_schema(
 _plan_session_key: ContextVar[str] = ContextVar("plan_session_key", default="")
 
 _PLAN_CACHE_TTL = 5.0
+_PLAN_CACHE_MAX = 256
 _plan_cache: dict[str, tuple[float, str]] = {}
 
 
@@ -190,7 +191,7 @@ class PlanTool(Tool, ContextAware):
                 + existing
             )
 
-        steps = self._parse_steps_input(steps_raw)
+        steps = [s for s in self._parse_steps_input(steps_raw) if s["text"]]
         lines = [f"# Plan: {title.strip()}"]
         if goal:
             lines.append(f"\nGoal: {goal.strip()}")
@@ -227,12 +228,12 @@ class PlanTool(Tool, ContextAware):
             if goal_idx is not None:
                 lines[goal_idx] = new_goal_line
             else:
-                # Insert after title
+                # Insert after title with blank line separator
                 title_idx = next(
                     (i for i, ln in enumerate(lines) if ln.startswith("# Plan: ")), 0
                 )
-                lines.insert(title_idx + 1, "")
                 lines.insert(title_idx + 1, new_goal_line)
+                lines.insert(title_idx + 1, "")
 
         # Update steps
         if steps_raw:
@@ -247,7 +248,8 @@ class PlanTool(Tool, ContextAware):
                     if ns.get("text") and ns["text"] != existing_steps[i]["text"]:
                         existing_steps[i]["text"] = ns["text"]
                 else:
-                    existing_steps.append(ns)
+                    if ns["text"]:
+                        existing_steps.append(ns)
 
             rendered = self._render_steps(existing_steps)
             # Replace the steps section
@@ -261,7 +263,15 @@ class PlanTool(Tool, ContextAware):
                     steps_end += 1
                 lines[steps_start:steps_end] = ["## Steps", rendered]
             else:
-                lines.extend(["", "## Steps", rendered])
+                # Insert Steps before Notes if Notes exists, else append
+                notes_idx = next(
+                    (i for i, ln in enumerate(lines) if ln.strip() == "## Notes"), None
+                )
+                if notes_idx is not None:
+                    for j, insert_line in enumerate(["## Steps", rendered, ""]):
+                        lines.insert(notes_idx + j, insert_line)
+                else:
+                    lines.extend(["", "## Steps", rendered])
 
         # Append notes
         if notes and notes.strip():
@@ -327,10 +337,12 @@ class PlanTool(Tool, ContextAware):
         result = []
         for item in items:
             if isinstance(item, str):
-                result.append({"text": item, "status": "pending"})
+                text = item.strip()
+                if text:
+                    result.append({"text": text, "status": "pending"})
             elif isinstance(item, dict):
                 result.append({
-                    "text": str(item.get("text", "")),
+                    "text": str(item.get("text", "")).strip(),
                     "status": item.get("status", "pending"),
                 })
         return result
@@ -365,6 +377,9 @@ class PlanTool(Tool, ContextAware):
         cached = _plan_cache.get(cache_key)
         if cached and (now - cached[0]) < _PLAN_CACHE_TTL:
             return cached[1]
+        # Evict expired entries when cache exceeds limit
+        if len(_plan_cache) > _PLAN_CACHE_MAX:
+            _plan_cache.clear()
         if not path.exists():
             _plan_cache.pop(cache_key, None)
             return None

@@ -133,6 +133,33 @@ class TestUpdate:
         assert "First note" in result
         assert "Second note" in result
 
+    async def test_update_adds_goal_to_plan_without_goal(self, tool):
+        set_session(tool)
+        await tool.execute(action="create", title="Plan A")
+        result = await tool.execute(action="update", goal="New goal")
+        assert "New goal" in result
+        # Goal should appear after title with proper separator
+        lines = result.split("\n")
+        title_idx = next(i for i, ln in enumerate(lines) if ln.startswith("# Plan:"))
+        goal_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Goal:"))
+        assert goal_idx > title_idx
+
+    async def test_update_adds_steps_before_notes(self, tool):
+        set_session(tool)
+        await tool.execute(action="create", title="Plan A")
+        await tool.execute(action="update", notes="A note")
+        result = await tool.execute(action="update", steps='[{"text": "Step 1"}]')
+        steps_idx = result.index("## Steps")
+        notes_idx = result.index("## Notes")
+        assert steps_idx < notes_idx
+
+    async def test_update_filters_empty_text_steps(self, tool):
+        set_session(tool)
+        steps = '[{"text": "Step 1"}, {"text": ""}]'
+        result = await tool.execute(action="create", title="Plan A", steps=steps)
+        assert "- [ ] Step 1" in result
+        assert result.count("- [ ]") == 1
+
 
 class TestShow:
     async def test_show_existing(self, tool):
