@@ -38,6 +38,7 @@ interface ThreadViewportProps {
   isStreaming: boolean;
   composer: ReactNode;
   emptyState?: ReactNode;
+  emptyStateBackground?: ReactNode;
   scrollToBottomSignal?: number;
   activeTurnId?: string | null;
   activeTurnStartedHere?: boolean;
@@ -155,6 +156,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   isStreaming,
   composer,
   emptyState,
+  emptyStateBackground,
   scrollToBottomSignal = 0,
   activeTurnId = null,
   activeTurnStartedHere = false,
@@ -628,12 +630,17 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
           data-testid={!hasMessages ? "thread-welcome-layout" : undefined}
           data-layout={hasMessages ? "thread" : "hero"}
           className={cn(
-            "thread-layout mx-auto grid min-h-full w-full",
+            "thread-layout relative mx-auto grid min-h-full w-full",
             hasMessages
               ? "max-w-[64rem]"
               : "max-w-[72rem] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-6 sm:px-4 sm:py-12",
           )}
         >
+          {!hasMessages && emptyStateBackground ? (
+            <div className="absolute inset-0 z-20 overflow-hidden">
+              {emptyStateBackground}
+            </div>
+          ) : null}
           {hasMessages ? (
             <div
               ref={messageRegionRef}
@@ -656,7 +663,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
               </div>
             </div>
           ) : (
-            <div className="row-start-1 flex min-h-0 min-w-0 w-full items-center justify-center sm:items-end sm:pb-8">
+            <div className="pointer-events-none relative z-30 row-start-1 flex min-h-0 min-w-0 w-full items-center justify-center sm:items-end sm:pb-8">
               {emptyState}
             </div>
           )}
@@ -665,7 +672,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
             ref={composerDockRef}
             data-testid="thread-composer-dock"
             className={cn(
-              "row-start-2 z-10 w-full",
+              "row-start-2 z-30 w-full",
               hasMessages ? "sticky bottom-0 bg-background" : "relative self-center",
             )}
           >
@@ -684,10 +691,9 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
               </div>
             </div>
           </div>
-
           <div
             aria-hidden
-            className="thread-layout-spacer row-start-3 min-h-0 overflow-hidden"
+            className="thread-layout-spacer pointer-events-none row-start-3 min-h-0 overflow-hidden"
           />
         </div>
         <div ref={bottomRef} aria-hidden className="h-px" />
