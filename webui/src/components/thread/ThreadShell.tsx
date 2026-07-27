@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { FilePreviewAvailabilityProvider } from "@/components/FilePreviewAvailabilityContext";
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
+import { NanobotParticleMark } from "@/components/thread/NanobotParticleMark";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
@@ -1050,6 +1051,9 @@ export function ThreadShell({
       <HeroGreeting text={t(heroGreetingKey)} />
     </div>
   );
+  const emptyStateBackground = loading ? null : (
+    <NanobotParticleMark theme={theme} />
+  );
   const sessionInfoAction = historyKey ? (
     <SessionInfoPopover sessionKey={historyKey} token={token} title={title} />
   ) : undefined;
@@ -1085,6 +1089,7 @@ export function ThreadShell({
             messages={displayMessages}
             isStreaming={turnActive}
             emptyState={emptyState}
+            emptyStateBackground={emptyStateBackground}
             composer={composer}
             activeTurnId={viewportTurnId}
             activeTurnStartedHere={activeTurnStartedHere}
