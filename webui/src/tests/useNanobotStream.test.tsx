@@ -3230,7 +3230,7 @@ describe("useNanobotStream", () => {
     expect(result.current.isStreaming).toBe(false);
   });
 
-  it("tracks retry status in place and clears it at turn end", () => {
+  it("clears retry status and exposes a terminal model failure at turn end", () => {
     const fake = fakeClient();
     const { result } = renderHook(() => useNanobotStream("chat-retry", EMPTY_MESSAGES), {
       wrapper: wrap(fake.client),
@@ -3270,6 +3270,11 @@ describe("useNanobotStream", () => {
     });
     expect(result.current.retryStatus).toBeNull();
     expect(result.current.isStreaming).toBe(false);
+    expect(result.current.streamError).toEqual({
+      kind: "model_request_failed",
+      chatId: "chat-retry",
+      turnId: "turn-1",
+    });
   });
 
   it("clears runStartedAt on turn_end even without idle", () => {
