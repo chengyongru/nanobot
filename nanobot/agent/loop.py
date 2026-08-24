@@ -60,7 +60,13 @@ from nanobot.command.router import normalize_command_text
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.events import NO_EVENTS, AgentEvent, EventSink
 from nanobot.llm_usage.context import source_from_request
-from nanobot.providers.base import LLMProvider, LLMUsage, ProviderConversationState
+from nanobot.providers.base import (
+    LLMProvider,
+    LLMUsage,
+    ProviderConversationState,
+    RetryEventCallback,
+    RetryStatusCallback,
+)
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
@@ -2073,6 +2079,7 @@ class AgentLoop:
             )
 
     async def _prepare_outbound(self, ctx: TurnContext) -> None:
+        ctx.delivery.record_stop_reason(ctx.stop_reason)
         if ctx.suppress_response:
             ctx.outbound = None
             return

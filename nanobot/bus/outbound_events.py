@@ -37,6 +37,15 @@ class FileEditEvent(ProgressEvent):
 
 
 @dataclass(frozen=True)
+class RetryStatusEvent(AgentEvent):
+    state: str
+    attempt: int
+    max_attempts: int | None
+    error_kind: str
+    next_retry_at: float | None = None
+
+
+@dataclass(frozen=True)
 class StreamDeltaEvent(AgentEvent):
     content: str = ""
     stream_id: str | None = None
@@ -62,6 +71,9 @@ class TurnEndEvent(AgentEvent):
     usage: LLMUsage | None = None
     round_usages: tuple[LLMUsage, ...] = ()
     context_window_tokens: int | None = None
+    outcome: str = "completed"
+    failure_kind: str | None = None
+    failure_message: str | None = None
 
 
 @dataclass(frozen=True)

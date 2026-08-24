@@ -146,6 +146,7 @@ class WebUIOutboundProjector:
         if not conns:
             quiet_events = (
                 ProgressEvent,
+                RetryStatusEvent,
                 UserInputEvent,
                 TurnEndEvent,
                 SessionUpdatedEvent,
@@ -189,6 +190,14 @@ class WebUIOutboundProjector:
                     msg.chat_id, notification.payload,
                     persistence=notification.persistence,
                     **kwargs,
+                )
+            return
+        if isinstance(event, RetryStatusEvent):
+            if conns:
+                await self._transport.send_payload(
+                    msg.chat_id,
+                    encode_retry_status(msg.chat_id, event, msg.metadata),
+                    persistence="transient",
                 )
             return
         if isinstance(event, GoalStateSyncEvent):

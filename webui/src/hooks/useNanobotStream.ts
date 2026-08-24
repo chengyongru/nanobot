@@ -39,6 +39,7 @@ import type {
   GoalStateWsPayload,
   MessageDeliveryStatus,
   RecoveryState,
+  RetryStatus,
   UIMediaAttachment,
   UIMessage,
   WorkspaceScopePayload,
@@ -247,6 +248,8 @@ export function useNanobotStream(
   isStreaming: boolean;
   /** Unix epoch seconds when the current user turn started (WebSocket ``goal_status``). */
   runStartedAt: number | null;
+  /** Transient model retry state for the active turn. */
+  retryStatus: RetryStatus | null;
   /** Latest sustained goal for this ``chatId`` (``goal_state`` WS events). */
   goalState: GoalStateWsPayload | undefined;
   recoveryState: RecoveryState | null;
@@ -281,6 +284,7 @@ export function useNanobotStream(
   );
   /** Unix epoch seconds when the current user turn started; cleared on ``idle``. */
   const [runStartedAt, setRunStartedAt] = useState<number | null>(initialRunStartedAt);
+  const [retryStatus, setRetryStatus] = useState<RetryStatus | null>(null);
   const [goalState, setGoalState] = useState<GoalStateWsPayload | undefined>(undefined);
   const [recoveryState, setRecoveryState] = useState<RecoveryState | null>(null);
   const [streamError, setStreamError] = useState<StreamError | null>(null);
@@ -680,6 +684,7 @@ export function useNanobotStream(
     );
     setStreamError(null);
     setRunStartedAt(restoredRunStartedAt);
+    setRetryStatus(null);
     setGoalState(chatId ? client.getGoalState(chatId) : undefined);
     setRecoveryState(null);
     buffer.current = null;
@@ -802,6 +807,13 @@ export function useNanobotStream(
         });
         return;
       }
+      if (
+        ev.event === "delta"
+        || ev.event === "message"
+        || ev.event === "file_edit"
+        || ev.event === "reasoning_delta"
+        || ev.event === "stream_end"
+      ) setRetryStatus(null);
       if (ev.event === "delta") {
         if (suppressStreamUntilTurnEndRef.current) return;
         const chunk = typeof ev.text === "string" ? ev.text : "";
@@ -880,6 +892,30 @@ export function useNanobotStream(
         } else {
           setRunStartedAt(null);
           setIsStreaming(false);
+          setRetryStatus(null);
+        }
+        return;
+      }
+
+      if (ev.event === "retry_status") {
+        const activeTurnId = client.getRunTurnId(chatId);
+        if (ev.turn_id && activeTurnId && ev.turn_id !== activeTurnId) return;
+        if (ev.state === "recovered") {
+          setRetryStatus(null);
+        } else {
+          setRetryStatus({
+            state: ev.state,
+            attempt: ev.attempt,
+            error_kind: ev.error_kind,
+            ...(typeof ev.max_attempts === "number"
+              ? { max_attempts: ev.max_attempts }
+              : {}),
+            ...(typeof ev.next_retry_at === "number"
+              ? { next_retry_at: ev.next_retry_at }
+              : {}),
+            ...(ev.turn_id ? { turn_id: ev.turn_id } : {}),
+          });
+          setIsStreaming(true);
         }
         return;
       }
@@ -890,6 +926,7 @@ export function useNanobotStream(
           setGoalState(ev.goal_state);
         }
         setRunStartedAt(null);
+        setRetryStatus(null);
         // Definitive signal that the turn is fully complete, so stop the
         // loading indicator immediately.
         setIsStreaming(false);
@@ -920,7 +957,11 @@ export function useNanobotStream(
           return finalized;
         });
         suppressStreamUntilTurnEndRef.current = false;
-        notifyInBackground(t("recovery.completed", { defaultValue: "Task completed" }));
+        notifyInBackground(
+          ev.outcome === "failed"
+            ? ev.failure_message || "Model request failed. This turn has ended."
+            : t("recovery.completed", { defaultValue: "Task completed" }),
+        );
         onTurnEnd?.();
         return;
       }
@@ -945,6 +986,7 @@ export function useNanobotStream(
           || ev.status === "recovered"
           || ev.status === "failed"
         ) {
+          setRetryStatus(null);
           // Recovery is an explicit boundary. The interrupted turn is no
           // longer running, so do not let the stale start time keep the
           // activity clock (or composer stop state) alive underneath the
@@ -1220,6 +1262,7 @@ export function useNanobotStream(
       flushPendingStreamEvents();
       if (finalizeActiveTurn) {
         setIsStreaming(false);
+        setRetryStatus(null);
       }
       const turnId = crypto.randomUUID();
       const userMessageId = crypto.randomUUID();
@@ -1280,6 +1323,7 @@ export function useNanobotStream(
     if (!chatId) return;
     flushPendingStreamEvents();
     setIsStreaming(false);
+    setRetryStatus(null);
     setMessages((prev) => {
       buffer.current = null;
       activeAssistantRef.current = null;
@@ -1301,6 +1345,7 @@ export function useNanobotStream(
     clearActivitySegment();
     suppressStreamUntilTurnEndRef.current = false;
     setRunStartedAt(null);
+    setRetryStatus(null);
     setIsStreaming(false);
   }, [clearActivitySegment, clearPendingStreamWork]);
 
@@ -1332,6 +1377,7 @@ export function useNanobotStream(
     messagesReady: messageOwnerChatId === chatId,
     isStreaming,
     runStartedAt,
+    retryStatus,
     goalState,
     recoveryState,
     continueRecovery,

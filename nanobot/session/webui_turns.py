@@ -18,6 +18,7 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import (
     GoalStateSyncEvent,
     GoalStatusEvent,
+    RetryStatusEvent,
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,
@@ -32,6 +33,7 @@ from nanobot.bus.runtime_events import (
     RuntimeModelChanged,
     SessionTurnStarted,
     TurnCompleted,
+    TurnRetryStatusChanged,
     TurnRunStatusChanged,
     TurnRuntimeAdmitted,
     UserInputAccepted,
@@ -681,6 +683,24 @@ class WebuiTurnCoordinator:
             started_at=event.started_at,
         )
 
+    async def _handle_retry_status_changed(self, event: TurnRetryStatusChanged) -> None:
+        if not self._is_websocket_event(event.context):
+            return
+        await self.bus.publish_outbound(
+            outbound_message_for_event(
+                channel=event.context.channel,
+                chat_id=event.context.chat_id,
+                event=RetryStatusEvent(
+                    state=event.state,
+                    attempt=event.attempt,
+                    max_attempts=event.max_attempts,
+                    error_kind=event.error_kind,
+                    next_retry_at=event.next_retry_at,
+                ),
+                metadata=event.context.metadata,
+            )
+        )
+
     async def _handle_turn_runtime_admitted(self, event: TurnRuntimeAdmitted) -> None:
         if not self._is_websocket_event(event.context):
             return
@@ -710,6 +730,8 @@ class WebuiTurnCoordinator:
             context_window_tokens=(
                 event.runtime.context_window_tokens if event.runtime is not None else None
             ),
+            outcome=event.outcome,
+            failure_kind=event.failure_kind,
         )
         if self.recovery is not None:
             await self.recovery.turn_completed(event.context.session_key)
@@ -753,6 +775,8 @@ class WebuiTurnCoordinator:
         usage: LLMUsage | None = None,
         round_usages: tuple[LLMUsage, ...] = (),
         context_window_tokens: int | None = None,
+        outcome: str = "completed",
+        failure_kind: str | None = None,
     ) -> None:
         if msg.channel != "websocket":
             return
@@ -768,6 +792,15 @@ class WebuiTurnCoordinator:
                     usage=usage,
                     round_usages=round_usages,
                     context_window_tokens=context_window_tokens,
+                    outcome=outcome,
+                    failure_kind=failure_kind,
+                    failure_message=(
+                        "Model request failed. This turn has ended."
+                        if failure_kind == "model"
+                        else "This turn failed and has ended."
+                        if outcome == "failed"
+                        else None
+                    ),
                 ),
                 metadata=msg.metadata,
             )

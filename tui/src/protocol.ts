@@ -80,6 +80,13 @@ export interface RuntimeControls {
   canUseFullAccess: boolean
 }
 
+export interface RetryStatus {
+  state: "waiting" | "recovered" | "exhausted"
+  attempt: number
+  max_attempts?: number
+  error_kind: string
+  next_retry_at?: number
+}
 export type InboundEvent =
   | { event: "ready"; chat_id: string; client_id: string }
   | {
@@ -128,6 +135,7 @@ export type InboundEvent =
     }
   | { event: "reasoning_delta"; chat_id: string; text: string; turn_id?: string }
   | { event: "reasoning_end"; chat_id: string; turn_id?: string }
+  | ({ event: "retry_status"; chat_id: string; turn_id?: string } & RetryStatus)
   | {
       event: "turn_end"
       chat_id: string
@@ -136,6 +144,9 @@ export type InboundEvent =
       usage?: TokenUsage
       context_window_tokens?: number
       goal_state?: Record<string, unknown>
+      outcome?: "completed" | "failed" | "cancelled" | "interrupted"
+      failure_kind?: string
+      failure_message?: string
     }
   | {
       event: "goal_status"
@@ -347,6 +358,7 @@ const CHAT_EVENTS = new Set([
   "stream_end",
   "reasoning_delta",
   "reasoning_end",
+  "retry_status",
   "turn_end",
   "goal_status",
   "goal_state",
@@ -435,6 +447,19 @@ function isWorkspaceScope(value: unknown): value is WorkspaceScopePayload {
     && optional(value.restrict_to_workspace, "boolean")
 }
 
+function isRetryStatus(value: unknown): value is RetryStatus {
+  return isRecord(value)
+    && ["waiting", "recovered", "exhausted"].includes(String(value.state))
+    && typeof value.attempt === "number"
+    && Number.isInteger(value.attempt)
+    && value.attempt >= 1
+    && (value.max_attempts === undefined
+      || (typeof value.max_attempts === "number"
+        && Number.isInteger(value.max_attempts)
+        && value.max_attempts >= value.attempt))
+    && typeof value.error_kind === "string"
+    && optional(value.next_retry_at, "number")
+}
 interface WebUIResponseEvent {
   event: "webui_response"
   request_id: string
@@ -526,8 +551,13 @@ function decodeInboundEvent(value: unknown): InboundEvent | null | undefined {
     && (!optional(record.latency_ms, "number")
       || !optional(record.context_window_tokens, "number")
       || (record.usage !== undefined && !isTokenUsage(record.usage))
-      || (record.goal_state !== undefined && !isRecord(record.goal_state)))
+      || (record.goal_state !== undefined && !isRecord(record.goal_state))
+      || (record.outcome !== undefined
+        && !["completed", "failed", "cancelled", "interrupted"].includes(String(record.outcome)))
+      || !optional(record.failure_kind, "string")
+      || !optional(record.failure_message, "string"))
   ) return null
+  if (name === "retry_status" && !isRetryStatus(record)) return null
   if (name === "goal_status" && record.status !== "running" && record.status !== "idle") return null
   if (name === "goal_state" && !isRecord(record.goal_state)) return null
   if (decodeNotification(record) === null) return null
