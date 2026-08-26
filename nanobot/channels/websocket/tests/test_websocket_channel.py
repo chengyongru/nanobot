@@ -30,6 +30,7 @@ from nanobot.bus.outbound_events import (
     ProgressEvent,
     RecoveryStateEvent,
     RetryStatusEvent,
+    RetryWaitEvent,
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,

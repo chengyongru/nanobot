@@ -64,7 +64,6 @@ from nanobot.providers.base import (
     LLMProvider,
     LLMUsage,
     ProviderConversationState,
-    RetryEventCallback,
     RetryStatusCallback,
 )
 from nanobot.providers.factory import ProviderSnapshot

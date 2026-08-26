@@ -307,9 +307,10 @@ class TurnDelivery:
         completed_channel = self.lifecycle_message.channel
         completed_chat_id = self.lifecycle_message.chat_id
         if response is not None:
-            await self.bus.publish_outbound(response)
             completed_channel = response.channel
             completed_chat_id = response.chat_id
+            if response.channel != "websocket" or self._stop_reason != "error":
+                await self.bus.publish_outbound(response)
         elif self.lifecycle_message.channel == "cli":
             await self.bus.publish_outbound(
                 OutboundMessage(

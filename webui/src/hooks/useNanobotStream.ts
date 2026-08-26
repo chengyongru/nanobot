@@ -902,7 +902,7 @@ export function useNanobotStream(
       if (ev.event === "retry_status") {
         const activeTurnId = client.getRunTurnId(chatId);
         if (ev.turn_id && activeTurnId && ev.turn_id !== activeTurnId) return;
-        if (ev.state === "recovered") {
+        if (ev.state === "recovered" || ev.state === "cleared") {
           setRetryStatus(null);
         } else {
           setRetryStatus({
