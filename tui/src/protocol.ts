@@ -85,7 +85,7 @@ export interface RetryStatus {
   attempt: number
   max_attempts?: number
   error_kind: string
-  next_retry_at?: number
+  retry_after_s?: number
 }
 export type InboundEvent =
   | { event: "ready"; chat_id: string; client_id: string }
@@ -146,6 +146,8 @@ export type InboundEvent =
       goal_state?: Record<string, unknown>
       outcome?: "completed" | "failed" | "cancelled" | "interrupted"
       failure_kind?: string
+      failure_error_kind?: string
+      failure_attempts?: number
       failure_message?: string
     }
   | {
@@ -458,7 +460,10 @@ function isRetryStatus(value: unknown): value is RetryStatus {
         && Number.isInteger(value.max_attempts)
         && value.max_attempts >= value.attempt))
     && typeof value.error_kind === "string"
-    && optional(value.next_retry_at, "number")
+    && (value.retry_after_s === undefined
+      || (typeof value.retry_after_s === "number"
+        && Number.isFinite(value.retry_after_s)
+        && value.retry_after_s >= 0))
 }
 interface WebUIResponseEvent {
   event: "webui_response"
@@ -555,6 +560,11 @@ function decodeInboundEvent(value: unknown): InboundEvent | null | undefined {
       || (record.outcome !== undefined
         && !["completed", "failed", "cancelled", "interrupted"].includes(String(record.outcome)))
       || !optional(record.failure_kind, "string")
+      || !optional(record.failure_error_kind, "string")
+      || (record.failure_attempts !== undefined
+        && (typeof record.failure_attempts !== "number"
+          || !Number.isInteger(record.failure_attempts)
+          || record.failure_attempts < 1))
       || !optional(record.failure_message, "string"))
   ) return null
   if (name === "retry_status" && !isRetryStatus(record)) return null

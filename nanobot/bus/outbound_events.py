@@ -73,6 +73,8 @@ class TurnEndEvent(AgentEvent):
     context_window_tokens: int | None = None
     outcome: str = "completed"
     failure_kind: str | None = None
+    failure_error_kind: str | None = None
+    failure_attempts: int | None = None
     failure_message: str | None = None
 
 

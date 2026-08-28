@@ -1416,7 +1416,7 @@ export type InboundEvent =
       attempt: number;
       max_attempts?: number;
       error_kind: string;
-      next_retry_at?: number;
+      retry_after_s?: number;
     } & InboundTurnMetadata)
   | {
       event: "runtime_model_updated";
@@ -1441,6 +1441,8 @@ export type InboundEvent =
       goal_state?: GoalStateWsPayload;
       outcome?: "completed" | "failed" | "cancelled" | "interrupted";
       failure_kind?: string;
+      failure_error_kind?: string;
+      failure_attempts?: number;
       failure_message?: string;
     } & InboundTurnMetadata)
   | ({
