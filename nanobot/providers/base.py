@@ -1725,9 +1725,11 @@ class LLMProvider(ABC):
             await asyncio.sleep(chunk)
             remaining -= chunk
 
-    @staticmethod
-    def _retry_error_kind(response: LLMResponse) -> str:
+    @classmethod
+    def public_error_kind(cls, response: LLMResponse) -> str:
         """Return a stable public category without exposing provider details."""
+        if cls.is_arrearage_response(response):
+            return "billing"
         kind = (response.error_kind or "").strip().lower()
         if kind in {"connection", "timeout"}:
             return kind
@@ -1756,19 +1758,26 @@ class LLMProvider(ABC):
         last_response: LLMResponse | None = None
         last_error_key: str | None = None
         identical_error_count = 0
+
+        async def _finish_retry_status(
+            state: Literal["recovered", "cleared"],
+            response: LLMResponse,
+        ) -> None:
+            if attempt > 1 and on_retry_status:
+                await on_retry_status(
+                    ModelRetryStatus(
+                        state=state,
+                        attempt=attempt,
+                        max_attempts=None if persistent else len(delays) + 1,
+                        error_kind=self.public_error_kind(response),
+                    )
+                )
+
         while True:
             attempt += 1
             response = await call(**kw)
             if response.finish_reason != "error":
-                if attempt > 1 and on_retry_status:
-                    await on_retry_status(
-                        ModelRetryStatus(
-                            state="recovered",
-                            attempt=attempt,
-                            max_attempts=None if persistent else len(delays) + 1,
-                            error_kind="unknown",
-                        )
-                    )
+                await _finish_retry_status("recovered", response)
                 return response
             last_response = response
             if should_retry_guard is not None and not should_retry_guard():
@@ -1794,6 +1803,7 @@ class LLMProvider(ABC):
                     logger.warning(
                         "LLM stream failed after content was emitted; skipping retry"
                     )
+                    await _finish_retry_status("cleared", response)
                     return response
             error_key = ((response.content or "").strip().lower() or None)
             if error_key and error_key == last_error_key:
@@ -1836,7 +1846,12 @@ class LLMProvider(ABC):
                     # subsequent iterations do not repeat the error-retry cycle.
                     if result.finish_reason != "error":
                         self._strip_image_content_inplace(original_messages)
+                    await _finish_retry_status(
+                        "recovered" if result.finish_reason != "error" else "cleared",
+                        result,
+                    )
                     return result
+                await _finish_retry_status("cleared", response)
                 return response
 
             if persistent and identical_error_count >= self._PERSISTENT_IDENTICAL_ERROR_LIMIT:
@@ -1855,7 +1870,7 @@ class LLMProvider(ABC):
                             state="exhausted",
                             attempt=attempt,
                             max_attempts=None,
-                            error_kind=self._retry_error_kind(response),
+                            error_kind=self.public_error_kind(response),
                         )
                     )
                 return response
@@ -1876,7 +1891,7 @@ class LLMProvider(ABC):
                             state="exhausted",
                             attempt=attempt,
                             max_attempts=len(delays) + 1,
-                            error_kind=self._retry_error_kind(response),
+                            error_kind=self.public_error_kind(response),
                         )
                     )
                 break
@@ -1898,7 +1913,7 @@ class LLMProvider(ABC):
                 delay,
                 attempt=attempt,
                 persistent=persistent,
-                error_kind=self._retry_error_kind(response),
+                error_kind=self.public_error_kind(response),
                 max_attempts=None if persistent else len(delays) + 1,
                 on_retry_wait=on_retry_wait,
                 on_retry_status=on_retry_status,

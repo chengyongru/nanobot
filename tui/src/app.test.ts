@@ -14,7 +14,12 @@ import {
   type TestRendererSetup,
 } from "@opentui/core/testing"
 
-import { NanobotTui, sessionExitMessage, type AppOptions } from "./app"
+import {
+  NanobotTui,
+  sessionExitMessage,
+  terminalModelFailureLine,
+  type AppOptions,
+} from "./app"
 import type {
   MessageOptions,
   RecoveryState,
@@ -60,6 +65,16 @@ test("formats a reusable session ID after exit", () => {
   )
 })
 
+test("formats actionable terminal model failures without inventing retries", () => {
+  expect(terminalModelFailureLine("billing")).toBe(
+    "Model provider quota is unavailable. "
+      + "Add credit or check billing for the provider account, then try again.",
+  )
+  expect(terminalModelFailureLine("unknown")).toBe(
+    "Model provider request failed. "
+      + "Check the provider configuration or service status, then try again.",
+  )
+})
 function contrastRatio(foreground: string, background: string): number {
   const luminance = (color: string) => {
     const channel = (offset: number) => {
