@@ -3,12 +3,12 @@ import copy
 
 import pytest
 
+from nanobot.events import RetryStatusEvent
 from nanobot.providers.base import (
     RETRY_AFTER_BUFFER,
     GenerationSettings,
     LLMProvider,
     LLMResponse,
-    ModelRetryStatus,
     ProviderCallContext,
     ProviderConversationState,
 )
@@ -75,12 +75,12 @@ async def test_chat_with_retry_emits_structured_retry_lifecycle(monkeypatch) -> 
         ),
         LLMResponse(content="ok"),
     ])
-    statuses: list[ModelRetryStatus] = []
+    statuses: list[RetryStatusEvent] = []
 
     async def _fake_sleep(_delay: float) -> None:
         return None
 
-    async def _status(status: ModelRetryStatus) -> None:
+    async def _status(status: RetryStatusEvent) -> None:
         statuses.append(status)
 
     monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
@@ -116,12 +116,12 @@ async def test_chat_with_retry_clears_waiting_status_on_terminal_non_transient_e
             error_should_retry=False,
         ),
     ])
-    statuses: list[ModelRetryStatus] = []
+    statuses: list[RetryStatusEvent] = []
 
     async def _fake_sleep(_delay: float) -> None:
         return None
 
-    async def _status(status: ModelRetryStatus) -> None:
+    async def _status(status: RetryStatusEvent) -> None:
         statuses.append(status)
 
     monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
@@ -191,7 +191,7 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
         ),
     ])
     progress: list[str] = []
-    statuses: list[ModelRetryStatus] = []
+    statuses: list[RetryStatusEvent] = []
 
     async def _fake_sleep(delay: int) -> None:
         return None
@@ -199,7 +199,7 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
     async def _progress(msg: str) -> None:
         progress.append(msg)
 
-    async def _status(status: ModelRetryStatus) -> None:
+    async def _status(status: RetryStatusEvent) -> None:
         statuses.append(status)
 
     monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
@@ -212,7 +212,7 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
 
     assert response.content == "503 final server error"
     assert progress[-1] == "Model request failed after 4 attempts, giving up."
-    assert statuses[-1] == ModelRetryStatus(
+    assert statuses[-1] == RetryStatusEvent(
         state="exhausted",
         attempt=4,
         max_attempts=4,

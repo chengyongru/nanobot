@@ -113,7 +113,9 @@ class NotificationProjection:
     attach_turn_metadata: bool = False
 
 
-def project_notification(chat_id: str, event: AgentEvent | None) -> NotificationProjection | None:
+def project_notification(
+    chat_id: str, event: AgentEvent | None, metadata: Mapping[str, object] | None = None,
+) -> NotificationProjection | None:
     """Keep notification serialization and persistence decisions at one boundary."""
     if isinstance(event, ContextCompactionEvent):
         return NotificationProjection(
@@ -122,6 +124,8 @@ def project_notification(chat_id: str, event: AgentEvent | None) -> Notification
             deliver_offline=True,
             attach_turn_metadata=True,
         )
+    if isinstance(event, RetryStatusEvent):
+        return NotificationProjection(encode_retry_status(chat_id, event, metadata))
     if isinstance(event, RecoveryStateEvent):
         return NotificationProjection(encode_recovery_state(chat_id, event))
     return None

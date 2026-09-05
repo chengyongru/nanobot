@@ -11,10 +11,10 @@ import pytest
 from loguru import logger
 
 from nanobot.config.schema import ModelPresetConfig
+from nanobot.events import RetryStatusEvent
 from nanobot.providers.base import (
     LLMProvider,
     LLMResponse,
-    ModelRetryStatus,
     ProviderCallContext,
     ProviderConversationState,
 )
@@ -1087,12 +1087,14 @@ class TestRetryBeforeFailover:
             )
         assert result.content == "fallback ok"
         events = [call.args[0] for call in observe.await_args_list]
-        assert len(events) == 3
-        assert all(isinstance(event, RetryWaitEvent) for event in events)
-        assert not any("giving up" in event.content for event in events)
+        notices = [event for event in events if isinstance(event, RetryWaitEvent)]
+        assert len(notices) == 3
+        assert not any("giving up" in event.content for event in notices)
+        statuses = [event.state for event in events if isinstance(event, RetryStatusEvent)]
+        assert statuses == ["cleared", "waiting", "waiting", "waiting", "cleared"]
 
     async def test_scoped_persistent_retry_includes_chain_wait_and_one_terminal(self):
-        from nanobot.events import EventSink
+        from nanobot.events import EventSink, RetryWaitEvent
 
         primary = _FakeProvider("primary", _retryable_error("primary unavailable"))
         fallback = _FakeProvider("fallback", _retryable_error("fallback unavailable"))
@@ -1106,11 +1108,15 @@ class TestRetryBeforeFailover:
                 provider_context=ProviderCallContext(events=EventSink(observe)),
             )
         assert result.finish_reason == "error"
-        notices = [call.args[0].content for call in observe.await_args_list]
+        events = [call.args[0] for call in observe.await_args_list]
+        notices = [event.content for event in events if isinstance(event, RetryWaitEvent)]
         # Two candidates, three waits each, for two chains, plus one chain wait.
         assert len(notices) == 14
         assert sum("Persistent retry stopped" in text for text in notices) == 1
         assert not any("giving up" in text for text in notices)
+        statuses = [event for event in events if isinstance(event, RetryStatusEvent)]
+        assert sum(event.state == "exhausted" for event in statuses) == 1
+        assert statuses[-1].state == "exhausted"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("retry_mode", ["standard", "persistent"])
@@ -1141,10 +1147,10 @@ class TestRetryBeforeFailover:
         fallback = _FakeProvider("fallback", _make_response("fallback ok"))
         factory = MagicMock(return_value=fallback)
         retry_events = AsyncMock()
-        retry_statuses: list[ModelRetryStatus] = []
+        retry_statuses: list[RetryStatusEvent] = []
         provider = FallbackProvider(primary, [_fallback("fallback-a")], factory)
 
-        async def _record_status(status: ModelRetryStatus) -> None:
+        async def _record_status(status: RetryStatusEvent) -> None:
             retry_statuses.append(status)
 
         with patch("nanobot.providers.base.asyncio.sleep", new_callable=AsyncMock):
@@ -1163,7 +1169,7 @@ class TestRetryBeforeFailover:
             "waiting",
             "cleared",
         ]
-        assert retry_statuses[-1] == ModelRetryStatus(
+        assert retry_statuses[-1] == RetryStatusEvent(
             state="cleared",
             attempt=4,
             max_attempts=4,
@@ -1177,14 +1183,14 @@ class TestRetryBeforeFailover:
         fallback = _FakeProvider("fallback", _retryable_error("fallback unavailable"))
         retry_events = AsyncMock()
         terminal_event = AsyncMock()
-        retry_statuses: list[ModelRetryStatus] = []
+        retry_statuses: list[RetryStatusEvent] = []
         provider = FallbackProvider(
             primary,
             [_fallback("fallback-a")],
             MagicMock(return_value=fallback),
         )
 
-        async def _record_status(status: ModelRetryStatus) -> None:
+        async def _record_status(status: RetryStatusEvent) -> None:
             retry_statuses.append(status)
 
         with patch("nanobot.providers.base.asyncio.sleep", new_callable=AsyncMock):

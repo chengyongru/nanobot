@@ -12,12 +12,12 @@ from typing import Any
 
 from loguru import logger
 
+from nanobot.events import RetryStatusEvent
 from nanobot.providers.base import (
     GenerationSettings,
     LLMCallObserver,
     LLMProvider,
     LLMResponse,
-    ModelRetryStatus,
     ProviderCallContext,
     ProviderConversationState,
     RetryEventCallback,
@@ -342,13 +342,13 @@ class FallbackProvider(LLMProvider):
 
         async def _call_chain(**chain_kwargs: Any) -> LLMResponse:
             last_exhausted_message: str | None = None
-            last_exhausted_status: ModelRetryStatus | None = None
+            last_exhausted_status: RetryStatusEvent | None = None
 
             async def _capture_exhaustion(message: str) -> None:
                 nonlocal last_exhausted_message
                 last_exhausted_message = message
 
-            async def _capture_status(status: ModelRetryStatus) -> None:
+            async def _capture_status(status: RetryStatusEvent) -> None:
                 nonlocal last_exhausted_status
                 if status.state == "exhausted":
                     last_exhausted_status = status
@@ -387,20 +387,11 @@ class FallbackProvider(LLMProvider):
                 on_stream_recover=on_stream_recover,
                 on_fallback_attempt=_clear_status_for_fallback,
             )
-            if (
-                retry_mode != "persistent"
-                and response.finish_reason == "error"
-                and last_exhausted_message
-                and on_retry_exhausted
-            ):
-                await on_retry_exhausted(last_exhausted_message)
-            if (
-                retry_mode != "persistent"
-                and response.finish_reason == "error"
-                and last_exhausted_status
-                and on_retry_status
-            ):
-                await on_retry_status(last_exhausted_status)
+            if retry_mode != "persistent" and response.finish_reason == "error":
+                if last_exhausted_message and on_retry_exhausted:
+                    await on_retry_exhausted(last_exhausted_message)
+                if last_exhausted_status and on_retry_status:
+                    await on_retry_status(last_exhausted_status)
             return response
 
         if retry_mode != "persistent":

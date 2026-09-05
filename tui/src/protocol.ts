@@ -1,6 +1,6 @@
 import { decodeNotification, isCompactionPhase, isRecoveryState } from "../../packages/client-events/notifications"
 import type { ContextCompaction, NotificationEvent, RecoveryState } from "../../packages/client-events/notifications"
-export type { ContextCompaction, RecoveryState, RecoveryStatus } from "../../packages/client-events/notifications"
+export type { ContextCompaction, RecoveryState, RecoveryStatus, RetryStatus } from "../../packages/client-events/notifications"
 
 export type ConnectionStatus =
   | "starting"
@@ -80,13 +80,6 @@ export interface RuntimeControls {
   canUseFullAccess: boolean
 }
 
-export interface RetryStatus {
-  state: "waiting" | "recovered" | "cleared" | "exhausted"
-  attempt: number
-  max_attempts?: number
-  error_kind: string
-  retry_after_s?: number
-}
 export type InboundEvent =
   | { event: "ready"; chat_id: string; client_id: string }
   | {
@@ -135,7 +128,6 @@ export type InboundEvent =
     }
   | { event: "reasoning_delta"; chat_id: string; text: string; turn_id?: string }
   | { event: "reasoning_end"; chat_id: string; turn_id?: string }
-  | ({ event: "retry_status"; chat_id: string; turn_id?: string } & RetryStatus)
   | {
       event: "turn_end"
       chat_id: string
@@ -449,22 +441,6 @@ function isWorkspaceScope(value: unknown): value is WorkspaceScopePayload {
     && optional(value.restrict_to_workspace, "boolean")
 }
 
-function isRetryStatus(value: unknown): value is RetryStatus {
-  return isRecord(value)
-    && ["waiting", "recovered", "cleared", "exhausted"].includes(String(value.state))
-    && typeof value.attempt === "number"
-    && Number.isInteger(value.attempt)
-    && value.attempt >= 1
-    && (value.max_attempts === undefined
-      || (typeof value.max_attempts === "number"
-        && Number.isInteger(value.max_attempts)
-        && value.max_attempts >= value.attempt))
-    && typeof value.error_kind === "string"
-    && (value.retry_after_s === undefined
-      || (typeof value.retry_after_s === "number"
-        && Number.isFinite(value.retry_after_s)
-        && value.retry_after_s >= 0))
-}
 interface WebUIResponseEvent {
   event: "webui_response"
   request_id: string
@@ -567,7 +543,6 @@ function decodeInboundEvent(value: unknown): InboundEvent | null | undefined {
           || record.failure_attempts < 1))
       || !optional(record.failure_message, "string"))
   ) return null
-  if (name === "retry_status" && !isRetryStatus(record)) return null
   if (name === "goal_status" && record.status !== "running" && record.status !== "idle") return null
   if (name === "goal_state" && !isRecord(record.goal_state)) return null
   if (decodeNotification(record) === null) return null

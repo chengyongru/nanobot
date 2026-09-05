@@ -70,6 +70,7 @@ class TurnCompleted(AgentEvent):
     outcome: str = "completed"
     failure_kind: str | None = None
     failure_error_kind: str | None = None
+    failure_attempts: int | None = None
 
 
 @dataclass(frozen=True)
@@ -233,33 +234,6 @@ class RuntimeEventPublisher:
             )
         )
 
-    async def retry_status_changed(
-        self,
-        msg: InboundMessage,
-        session_key: str,
-        *,
-        state: str,
-        attempt: int,
-        max_attempts: int | None,
-        error_kind: str,
-        next_retry_at: float | None,
-    ) -> None:
-        await self.bus.publish(
-            TurnRetryStatusChanged(
-                context=self._context(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    session_key=session_key,
-                    metadata=msg.metadata,
-                ),
-                state=state,
-                attempt=attempt,
-                max_attempts=max_attempts,
-                error_kind=error_kind,
-                next_retry_at=next_retry_at,
-            )
-        )
-
     async def session_turn_persisted(
         self,
         msg: InboundMessage,
@@ -292,6 +266,7 @@ class RuntimeEventPublisher:
         outcome: str = "completed",
         failure_kind: str | None = None,
         failure_error_kind: str | None = None,
+        failure_attempts: int | None = None,
     ) -> None:
         await self.bus.publish(
             TurnCompleted(
@@ -308,6 +283,7 @@ class RuntimeEventPublisher:
                 outcome=outcome,
                 failure_kind=failure_kind,
                 failure_error_kind=failure_error_kind,
+                failure_attempts=failure_attempts,
             )
         )
 

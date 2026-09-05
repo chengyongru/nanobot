@@ -12,6 +12,8 @@ from nanobot.bus.outbound_events import (
     GoalStateSyncEvent,
     GoalStatusEvent,
     ProgressEvent,
+    RetryStatusEvent,
+    RetryWaitEvent,
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,
@@ -134,6 +136,8 @@ class WebUIOutboundProjector:
 
     async def send(self, msg: OutboundMessage) -> None:
         event = msg.event
+        if isinstance(event, RetryWaitEvent):
+            return
         progress_event = event if isinstance(event, ProgressEvent) else None
         if isinstance(event, RuntimeModelUpdatedEvent):
             await self._transport.send_runtime_model_updated(
@@ -180,7 +184,7 @@ class WebUIOutboundProjector:
                     provenance=event.provenance,
                 )
             return
-        notification = project_notification(msg.chat_id, event)
+        notification = project_notification(msg.chat_id, event, msg.metadata)
         if notification is not None:
             if conns or notification.deliver_offline:
                 kwargs: dict[str, Any] = (
@@ -190,14 +194,6 @@ class WebUIOutboundProjector:
                     msg.chat_id, notification.payload,
                     persistence=notification.persistence,
                     **kwargs,
-                )
-            return
-        if isinstance(event, RetryStatusEvent):
-            if conns:
-                await self._transport.send_payload(
-                    msg.chat_id,
-                    encode_retry_status(msg.chat_id, event, msg.metadata),
-                    persistence="transient",
                 )
             return
         if isinstance(event, GoalStateSyncEvent):

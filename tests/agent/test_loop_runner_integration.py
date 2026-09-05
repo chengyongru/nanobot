@@ -13,13 +13,12 @@ from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import StreamedResponseEvent
 from nanobot.bus.queue import MessageBus
-from nanobot.bus.runtime_events import TurnRetryStatusChanged
 from nanobot.config.schema import AgentDefaults
+from nanobot.events import RetryStatusEvent
 from nanobot.providers.base import (
     GenerationSettings,
     LLMProvider,
     LLMResponse,
-    ModelRetryStatus,
     ToolCallRequest,
 )
 from nanobot.runtime_context import (
@@ -66,9 +65,9 @@ async def test_loop_uses_structured_retry_status_without_legacy_text(tmp_path):
 
     async def chat_with_retry(**kwargs):
         captured.update(kwargs)
-        retry_status = kwargs["on_retry_status"]
+        retry_status = kwargs["provider_context"].events.emit
         assert retry_status is not None
-        await retry_status(ModelRetryStatus(
+        await retry_status(RetryStatusEvent(
             state="waiting",
             attempt=1,
             max_attempts=4,
@@ -80,8 +79,6 @@ async def test_loop_uses_structured_retry_status_without_legacy_text(tmp_path):
     provider.chat_with_retry = chat_with_retry
     loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
     loop.tools.get_definitions = MagicMock(return_value=[])
-    seen: list[TurnRetryStatusChanged] = []
-    loop.runtime_events.subscribe(seen.append, TurnRetryStatusChanged)
 
     result = await loop._process_message(
         InboundMessage(
@@ -94,10 +91,12 @@ async def test_loop_uses_structured_retry_status_without_legacy_text(tmp_path):
     )
 
     assert result is not None
-    assert captured["on_retry_wait"] is None
-    assert len(seen) == 1
-    assert seen[0].state == "waiting"
-    assert bus.outbound_size == 0
+    assert captured["provider_context"].events.accepts(RetryStatusEvent)
+    assert bus.outbound_size == 1
+    outbound = bus.outbound.get_nowait()
+    assert isinstance(outbound.event, RetryStatusEvent)
+    assert outbound.event.state == "waiting"
+    assert outbound.chat_id == "chat-a"
 
 
 @pytest.mark.asyncio

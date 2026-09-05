@@ -1,4 +1,4 @@
-import type { ContextCompaction, NotificationEvent, RecoveryState } from "../../../packages/client-events/notifications";
+import type { ContextCompaction, NotificationEvent, RecoveryState, RetryStatus as WireRetryStatus } from "../../../packages/client-events/notifications";
 export type { RecoveryState, RecoveryStatus } from "../../../packages/client-events/notifications";
 
 type Role = "user" | "assistant" | "tool" | "system";
@@ -64,11 +64,7 @@ export interface TurnUsage {
 
 export type RoundUsage = TurnUsage;
 
-export interface RetryStatus {
-  state: "waiting" | "recovered" | "cleared" | "exhausted";
-  attempt: number;
-  max_attempts?: number;
-  error_kind: string;
+export interface RetryStatus extends WireRetryStatus {
   next_retry_at?: number;
   turn_id?: string;
 }
@@ -1408,15 +1404,6 @@ export type InboundEvent =
       event: "reasoning_end";
       chat_id: string;
       stream_id?: string;
-    } & InboundTurnMetadata)
-  | ({
-      event: "retry_status";
-      chat_id: string;
-      state: "waiting" | "recovered" | "cleared" | "exhausted";
-      attempt: number;
-      max_attempts?: number;
-      error_kind: string;
-      retry_after_s?: number;
     } & InboundTurnMetadata)
   | {
       event: "runtime_model_updated";

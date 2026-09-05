@@ -15,6 +15,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.events import AgentEvent
 from nanobot.events import ContextCompactionEvent as ContextCompactionEvent
 from nanobot.events import RecoveryStateEvent as RecoveryStateEvent
+from nanobot.events import RetryStatusEvent as RetryStatusEvent
 from nanobot.events import RetryWaitEvent as RetryWaitEvent
 from nanobot.providers.base import LLMUsage
 
@@ -34,15 +35,6 @@ class ProgressEvent(AgentEvent):
 @dataclass(frozen=True)
 class FileEditEvent(ProgressEvent):
     """File activity whose snapshot collection requires an interested consumer."""
-
-
-@dataclass(frozen=True)
-class RetryStatusEvent(AgentEvent):
-    state: str
-    attempt: int
-    max_attempts: int | None
-    error_kind: str
-    next_retry_at: float | None = None
 
 
 @dataclass(frozen=True)

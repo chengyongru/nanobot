@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any, cast
 from uuid import uuid4
 
@@ -18,7 +18,6 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import (
     GoalStateSyncEvent,
     GoalStatusEvent,
-    RetryStatusEvent,
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,
@@ -33,7 +32,6 @@ from nanobot.bus.runtime_events import (
     RuntimeModelChanged,
     SessionTurnStarted,
     TurnCompleted,
-    TurnRetryStatusChanged,
     TurnRunStatusChanged,
     TurnRuntimeAdmitted,
     UserInputAccepted,
@@ -560,12 +558,6 @@ class WebuiTurnCoordinator:
     sessions: SessionManager
     schedule_background: Callable[[Awaitable[None]], None]
     recovery: RecoveryCoordinator | None = None
-    _retry_status_by_session: dict[str, TurnRetryStatusChanged] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
-
     def subscribe(self) -> Callable[[], None]:
         """Subscribe this coordinator to runtime events."""
         unsubscribe = [
@@ -675,7 +667,6 @@ class WebuiTurnCoordinator:
     def _handle_session_turn_started(self, event: SessionTurnStarted) -> None:
         if not self._is_websocket_event(event.context):
             return
-        self._retry_status_by_session.pop(event.context.session_key, None)
         session = self.sessions.get_or_create(event.context.session_key)
         mark_webui_session(session, event.context.metadata)
 
@@ -687,28 +678,6 @@ class WebuiTurnCoordinator:
             self._ctx_msg(event.context),
             event.status,
             started_at=event.started_at,
-        )
-
-    async def _handle_retry_status_changed(self, event: TurnRetryStatusChanged) -> None:
-        if not self._is_websocket_event(event.context):
-            return
-        if event.state in {"recovered", "cleared"}:
-            self._retry_status_by_session.pop(event.context.session_key, None)
-        else:
-            self._retry_status_by_session[event.context.session_key] = event
-        await self.bus.publish_outbound(
-            outbound_message_for_event(
-                channel=event.context.channel,
-                chat_id=event.context.chat_id,
-                event=RetryStatusEvent(
-                    state=event.state,
-                    attempt=event.attempt,
-                    max_attempts=event.max_attempts,
-                    error_kind=event.error_kind,
-                    next_retry_at=event.next_retry_at,
-                ),
-                metadata=event.context.metadata,
-            )
         )
 
     async def _handle_turn_runtime_admitted(self, event: TurnRuntimeAdmitted) -> None:
@@ -730,14 +699,6 @@ class WebuiTurnCoordinator:
     async def _handle_turn_completed_event(self, event: TurnCompleted) -> None:
         if not self._is_websocket_event(event.context):
             return
-        retry_status = self._retry_status_by_session.pop(event.context.session_key, None)
-        model_retry_status = (
-            retry_status
-            if event.failure_kind == "model"
-            and retry_status is not None
-            and retry_status.state == "exhausted"
-            else None
-        )
         msg = self._ctx_msg(event.context)
         await self.handle_turn_end(
             msg,
@@ -750,17 +711,8 @@ class WebuiTurnCoordinator:
             ),
             outcome=event.outcome,
             failure_kind=event.failure_kind,
-            failure_error_kind=(
-                event.failure_error_kind
-                or (
-                    model_retry_status.error_kind
-                    if model_retry_status is not None
-                    else None
-                )
-            ),
-            failure_attempts=(
-                model_retry_status.attempt if model_retry_status is not None else None
-            ),
+            failure_error_kind=event.failure_error_kind,
+            failure_attempts=event.failure_attempts,
         )
         if self.recovery is not None:
             await self.recovery.turn_completed(event.context.session_key)

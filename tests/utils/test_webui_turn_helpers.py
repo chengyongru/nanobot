@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.agent.tools.context import RequestContext, request_context
+from nanobot.agent.turn_delivery import TurnDeliveryFactory
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import (
     GoalStatusEvent,
@@ -16,8 +17,6 @@ from nanobot.bus.outbound_events import (
 from nanobot.bus.queue import MessageBus
 from nanobot.bus.runtime_events import (
     RuntimeEventContext,
-    TurnCompleted,
-    TurnRetryStatusChanged,
     TurnRuntimeAdmitted,
     UserInputAccepted,
 )
@@ -251,120 +250,39 @@ async def test_admitted_runtime_publishes_chat_scoped_model_and_preset(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_failed_turn_includes_sanitized_provider_retry_cause(tmp_path) -> None:
-    bus = MagicMock()
-    bus.publish_outbound = AsyncMock()
-    runtime_events = RuntimeEventBus()
+@pytest.mark.parametrize(("states", "terminal_kind", "expected_kind", "attempts"), [
+    (("exhausted",), None, "connection", 4),
+    (("waiting", "recovered"), None, None, None),
+    (("waiting",), "billing", "billing", None),
+    (("exhausted", "cleared"), "billing", "billing", None),
+])
+async def test_turn_retry_cause_survives_only_actual_exhaustion(
+    tmp_path, states, terminal_kind, expected_kind, attempts,
+) -> None:
+    bus = MessageBus()
     coordinator = wth.WebuiTurnCoordinator(
-        bus=bus,
-        sessions=SessionManager(tmp_path),
+        bus=bus, sessions=SessionManager(tmp_path),
         schedule_background=lambda coro: coro.close(),
     )
-    coordinator.subscribe(runtime_events)
-    context = RuntimeEventContext(
-        channel="websocket",
-        chat_id="chat-retry",
-        session_key="websocket:chat-retry",
-        metadata={"webui": True, "webui_turn_id": "turn-1"},
-    )
+    with coordinator.connected():
+        msg = InboundMessage(
+            channel="websocket", sender_id="user", chat_id="chat-retry", content="hello",
+            metadata={"webui": True, "webui_turn_id": "turn-1"},
+        )
+        delivery = TurnDeliveryFactory(bus).create(msg, msg.session_key)
+        for state in states:
+            await delivery.events.emit(RetryStatusEvent(
+                state=state, attempt=4, max_attempts=4, error_kind="connection",
+            ))
+        delivery.record_stop_reason("error", failure_error_kind=terminal_kind)
+        await delivery.complete(None, publish_completion=True)
 
-    await runtime_events.publish(TurnRetryStatusChanged(
-        context=context,
-        state="exhausted",
-        attempt=4,
-        max_attempts=4,
-        error_kind="connection",
-    ))
-    await runtime_events.publish(TurnCompleted(
-        context=context,
-        outcome="failed",
-        failure_kind="model",
-    ))
-
-    retry_outbound, completed_outbound = [
-        call.args[0] for call in bus.publish_outbound.await_args_list
-    ]
-    assert isinstance(retry_outbound.event, RetryStatusEvent)
-    assert isinstance(completed_outbound.event, TurnEndEvent)
-    assert completed_outbound.event.failure_error_kind == "connection"
-    assert completed_outbound.event.failure_attempts == 4
-    assert "Connection error" not in (completed_outbound.event.failure_message or "")
-
-
-@pytest.mark.asyncio
-async def test_recovered_retry_cause_is_not_reused_by_turn_end(tmp_path) -> None:
-    bus = MagicMock()
-    bus.publish_outbound = AsyncMock()
-    runtime_events = RuntimeEventBus()
-    coordinator = wth.WebuiTurnCoordinator(
-        bus=bus,
-        sessions=SessionManager(tmp_path),
-        schedule_background=lambda coro: coro.close(),
-    )
-    coordinator.subscribe(runtime_events)
-    context = RuntimeEventContext(
-        channel="websocket",
-        chat_id="chat-retry",
-        session_key="websocket:chat-retry",
-        metadata={"webui": True, "webui_turn_id": "turn-1"},
-    )
-
-    for state in ("waiting", "recovered"):
-        await runtime_events.publish(TurnRetryStatusChanged(
-            context=context,
-            state=state,
-            attempt=2,
-            max_attempts=4,
-            error_kind="timeout",
-        ))
-    await runtime_events.publish(TurnCompleted(
-        context=context,
-        outcome="failed",
-        failure_kind="model",
-    ))
-
-    completed = bus.publish_outbound.await_args.args[0]
-    assert isinstance(completed.event, TurnEndEvent)
-    assert completed.event.failure_error_kind is None
-    assert completed.event.failure_attempts is None
-
-
-@pytest.mark.asyncio
-async def test_terminal_error_overrides_stale_waiting_retry_cause(tmp_path) -> None:
-    bus = MagicMock()
-    bus.publish_outbound = AsyncMock()
-    runtime_events = RuntimeEventBus()
-    coordinator = wth.WebuiTurnCoordinator(
-        bus=bus,
-        sessions=SessionManager(tmp_path),
-        schedule_background=lambda coro: coro.close(),
-    )
-    coordinator.subscribe(runtime_events)
-    context = RuntimeEventContext(
-        channel="websocket",
-        chat_id="chat-retry",
-        session_key="websocket:chat-retry",
-        metadata={"webui": True, "webui_turn_id": "turn-1"},
-    )
-
-    await runtime_events.publish(TurnRetryStatusChanged(
-        context=context,
-        state="waiting",
-        attempt=1,
-        max_attempts=4,
-        error_kind="connection",
-    ))
-    await runtime_events.publish(TurnCompleted(
-        context=context,
-        outcome="failed",
-        failure_kind="model",
-        failure_error_kind="billing",
-    ))
-
-    completed = bus.publish_outbound.await_args.args[0]
-    assert isinstance(completed.event, TurnEndEvent)
-    assert completed.event.failure_error_kind == "billing"
-    assert completed.event.failure_attempts is None
+    outbounds = [bus.outbound.get_nowait() for _ in range(bus.outbound_size)]
+    retry_events = [out.event for out in outbounds if isinstance(out.event, RetryStatusEvent)]
+    assert [event.state for event in retry_events] == list(states)
+    completed = next(out.event for out in outbounds if isinstance(out.event, TurnEndEvent))
+    assert completed.failure_error_kind == expected_kind
+    assert completed.failure_attempts == attempts
 
 
 @pytest.mark.asyncio
