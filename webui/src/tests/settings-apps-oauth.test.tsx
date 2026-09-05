@@ -207,6 +207,40 @@ describe("SettingsView Apps catalog", () => {
     await act(() => i18n.changeLanguage("en"));
   });
 
+  it("keeps an OAuth runtime failure visible after credentials are cleared", async () => {
+    const failedPreset = {
+      ...xmindMcpPreset,
+      installed: true,
+      configured: false,
+      available: false,
+      status: "authorization_required",
+      runtime_status: "failed",
+      connection_summary: "https://app.xmind.com/api/mcp",
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(settingsPayload());
+      if (url === "/api/settings/cli-apps") {
+        return jsonResponse({ apps: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/mcp-presets") {
+        return jsonResponse({ presets: [failedPreset], installed_count: 1 });
+      }
+      return { ok: false, status: 404, text: async () => "Not found" } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "apps" });
+    fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+
+    const heading = await screen.findByRole("heading", { name: "Xmind" });
+    const row = heading.closest("article");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText("Connection failed.")).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByRole("button", { name: "Manage Xmind" }))
+      .toHaveTextContent("Fix connection");
+  });
+
   it("refreshes a connecting MCP snapshot until the runtime attempt settles", async () => {
     const connectingPreset = {
       ...xmindMcpPreset,

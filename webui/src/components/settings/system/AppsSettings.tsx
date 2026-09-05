@@ -544,7 +544,7 @@ function McpAppsCatalogRow({
   const readyInstalled = preset.enabled ?? configuredInstalled;
   const runtimeConnected = !toggleable && preset.runtime_status === "connected";
   const runtimeConnecting = !toggleable && preset.runtime_status === "connecting";
-  const runtimeFailed = !toggleable && preset.runtime_status === "failed";
+  const runtimeFailed = !toggleable && preset.installed && preset.runtime_status === "failed";
   const statusLabel = toggleable
     ? tx("settings.nanobotFeatures.enabled", "Enabled")
     : runtimeConnected
@@ -600,14 +600,14 @@ function McpAppsCatalogRow({
           <p
             className={cn(
               "mt-0.5 flex min-w-0 items-center gap-1.5 text-[12.5px] leading-5 text-muted-foreground",
-              runtimeFailed && configuredInstalled && "font-medium text-destructive",
+              runtimeFailed && "font-medium text-destructive",
             )}
           >
-            {runtimeFailed && configuredInstalled ? (
+            {runtimeFailed ? (
               <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
             ) : null}
             <span className="truncate">
-              {runtimeFailed && configuredInstalled ? failureLabel : detail}
+              {runtimeFailed ? failureLabel : detail}
             </span>
           </p>
         </div>
@@ -646,7 +646,7 @@ function McpAppsCatalogRow({
                 <Trash2 className="h-4 w-4" aria-hidden />
               </AppsActionButton>
             </>
-          ) : runtimeFailed && configuredInstalled ? (
+          ) : runtimeFailed ? (
             <AppsActionButton
               ariaLabel={t("settings.mcp.manageTitle", {
                 name: preset.display_name,
@@ -856,7 +856,7 @@ function McpAppsCatalogRow({
           preset={preset}
           values={values}
           actionKey={actionKey}
-          statusLabel={runtimeFailed && configuredInstalled ? failureStatusLabel : statusLabel}
+          statusLabel={runtimeFailed ? failureStatusLabel : statusLabel}
           statusTone={runtimeFailed ? "warning" : configuredInstalled ? "success" : "neutral"}
           tab={managementTab}
           icon={<McpPresetLogo preset={preset} showBrandLogos={showBrandLogos} compact />}
